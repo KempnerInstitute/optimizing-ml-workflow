@@ -15,6 +15,14 @@
 
 export DATA_PATH="/n/holylfs06/LABS/kempner_shared/Everyone/testbed/vision/cifar10"
 
+module load cuda
+module load cudnn
+module load python
+
+conda activate  /n/holylfs06/LABS/kempner_shared/Everyone/common_envs/miniconda3/envs/pytorch_image
+
+
+
 # Check and set N_GPUS_ON_NODE based on available SLURM variables
 if [[ -n "$SLURM_GPUS_ON_NODE" ]]; then
     N_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE
@@ -65,7 +73,8 @@ echo $CMD
 # Start time
 start_time=$(date +%s)
 
-srun -l singularity run --nv $CONTAINER_PATH $CMD
+eval $CMD 
+
 echo "Job Completed"
 
 #End time
