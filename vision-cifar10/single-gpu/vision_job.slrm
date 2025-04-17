@@ -1,0 +1,91 @@
+#! /bin/bash
+#SBATCH --job-name=res
+#SBATCH --partition=kempner_dev
+#SBATCH --account=kempner_dev
+#SBATCH --constraint=a100
+#SBATCH --requeue 
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=1:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+
+export DATA_PATH="/n/holylfs06/LABS/kempner_shared/Everyone/testbed/vision/cifar10"
+
+# Check and set N_GPUS_ON_NODE based on available SLURM variables
+if [[ -n "$SLURM_GPUS_ON_NODE" ]]; then
+    N_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE
+elif [[ -n "$SLURM_NTASKS_PER_NODE" ]]; then
+    N_GPUS_ON_NODE=$SLURM_NTASKS_PER_NODE
+elif [[ -n "$SLURM_NTASKS" ]]; then
+    N_GPUS_ON_NODE=$SLURM_NTASKS
+else
+    echo "No relevant SLURM variables defined. Setting N_GPUS_ON_NODE to 0."
+    N_GPUS_ON_NODE=0
+fi
+
+
+export GPUS_ON_NODE=$N_GPUS_ON_NODE
+export NNODES=$SLURM_NNODES
+WORLD_SIZE=$(($GPUS_ON_NODE*$NNODES))
+
+nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
+nodes_array=($nodes)
+head_node=${nodes_array[0]}
+head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
+
+for head_port in {29500..49000}; do ! nc -z localhost ${myport} && break; done
+echo $head_port
+
+export MASTER_ADDR=$head_node_ip
+export MASTER_PORT=$head_port
+echo "MASTER_ADDR MASTER_PORT WORLD_SIZE"
+echo $MASTER_ADDR $MASTER_PORT $WORLD_SIZE
+
+CONTAINER_PATH=/n/holylabs/LABS/kempner_dev/Lab/containers/pytorch_2.1.2-cuda12.1-cudnn8-runtime.sif
+
+export CMD="python torch_vision_cifar10.py \
+  --data_path $DATA_PATH \
+  --metrics_csv results.csv \
+  --sample_ratio 1.0 \
+  --batch_size 512 \
+  --num_epochs 10 \
+  --learning_rate 0.0005 \
+  --model_name resnet50 \
+  --mixed_precision auto \
+  --pin_memory False
+ "
+
+
+echo $CMD 
+
+# Start time
+start_time=$(date +%s)
+
+srun -l singularity run --nv $CONTAINER_PATH $CMD
+echo "Job Completed"
+
+#End time
+end_time=$(date +%s)
+
+# Calculate the elapsed time
+elapsed_time=$((end_time - start_time))
+
+# Convert elapsed time to Hours:Minutes:Seconds format
+hours=$((elapsed_time / 3600))
+minutes=$(((elapsed_time % 3600) / 60))
+seconds=$((elapsed_time % 60))
+
+# Print the execution time
+printf "Execution time : %02d:%02d:%02d\n" "$hours" "$minutes" "$seconds"
+
+echo "============================="
+seff $SLURM_JOB_ID
+
+echo "============================="
+sacct -j $SLURM_JOB_ID --format=JobID,JobName,Partition,Account,AllocCPUs,State,ExitCode,Elapsed,MaxRSS,MaxVMSize
+echo "============================="
+
