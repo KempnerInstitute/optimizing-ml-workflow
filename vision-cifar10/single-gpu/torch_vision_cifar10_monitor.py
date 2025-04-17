@@ -61,43 +61,58 @@ def build_model(model_name='resnet50', num_classes=10, finetune=True):
     return model
 
 
-def log_system_utilization_to_tensorboard(tensorboard_logdir, epoch, step, cpu_utilization, gpu_utilization, gpu_memory_allocated):
-    """
-    Logs system utilization metrics (CPU, GPU) to TensorBoard log files.
-    """
-    if tensorboard_logdir:
-        with open(os.path.join(tensorboard_logdir, "system_utilization.txt"), "a") as f:
-            f.write(f"{epoch},{step},{cpu_utilization},{gpu_utilization},{gpu_memory_allocated}\n")
+def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth", amp_mode="none"):
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'amp_mode': amp_mode,
+    }
+    torch.save(checkpoint, path)
+    print(f"Checkpoint saved to {path}")
 
 
-def log_system_utilization(device, wandb_enabled=False, tensorboard_logdir=None, epoch=0, step=0):
-    # CPU utilization
-    cpu_utilization = psutil.cpu_percent(interval=None)
+def load_checkpoint(model, optimizer, path="checkpoint.pth"):
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint file not found: {path}")
 
-    # GPU utilization (if available)
-    gpu_utilization = None
-    gpu_memory_allocated = None
-    if device.type == "cuda" and torch.cuda.is_available():
-        gpu_utilization = torch.cuda.utilization(device)
-        gpu_memory_allocated = torch.cuda.memory_allocated(device) / (1024 ** 3)  # Convert to GB
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    epoch = checkpoint['epoch']
+    amp_mode = checkpoint.get('amp_mode', 'none')
+    print(f"Checkpoint loaded from {path}, resuming from epoch {epoch}")
+    return epoch, amp_mode
 
-    # Log to wandb
-    if wandb_enabled:
-        wandb.log({
-            "CPU Utilization (%)": cpu_utilization,
-            "GPU Utilization (%)": gpu_utilization if gpu_utilization is not None else 0,
-            "GPU Memory Allocated (GB)": gpu_memory_allocated if gpu_memory_allocated is not None else 0
-        })
 
-    # Log to TensorBoard
-    if tensorboard_logdir:
-        log_system_utilization_to_tensorboard(
-            tensorboard_logdir, epoch, step, cpu_utilization,
-            gpu_utilization if gpu_utilization is not None else 0,
-            gpu_memory_allocated if gpu_memory_allocated is not None else 0
-        )
+def save_snapshot(model, optimizer, scheduler, scaler, epoch, best_val_loss, snapshot_path="snapshot.pth"):
+    snapshot = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'scaler_state_dict': scaler.state_dict() if scaler else None,
+        'best_val_loss': best_val_loss
+    }
+    torch.save(snapshot, snapshot_path)
+    print(f"Snapshot saved to {snapshot_path}")
 
-    return cpu_utilization, gpu_utilization, gpu_memory_allocated
+
+def load_snapshot(model, optimizer, scheduler, scaler, snapshot_path="snapshot.pth"):
+    if not os.path.exists(snapshot_path):
+        raise FileNotFoundError(f"Snapshot file not found: {snapshot_path}")
+
+    snapshot = torch.load(snapshot_path)
+    model.load_state_dict(snapshot['model_state_dict'])
+    optimizer.load_state_dict(snapshot['optimizer_state_dict'])
+    if scheduler and snapshot['scheduler_state_dict']:
+        scheduler.load_state_dict(snapshot['scheduler_state_dict'])
+    if scaler and snapshot['scaler_state_dict']:
+        scaler.load_state_dict(snapshot['scaler_state_dict'])
+    epoch = snapshot['epoch']
+    best_val_loss = snapshot['best_val_loss']
+    print(f"Snapshot loaded from {snapshot_path}, resuming from epoch {epoch}")
+    return epoch, best_val_loss
 
 
 def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, tensorboard_logdir=None, wandb_enabled=False):
@@ -116,16 +131,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
         scaler.update()
         total_loss += loss.item()
 
-        # Log system utilization
-        log_system_utilization(
-            device, wandb_enabled, tensorboard_logdir,
-            epoch=epoch, step=epoch * len(dataloader) + batch_idx
-        )
-
-        # Log to TensorBoard and wandb
-        if tensorboard_logdir:
-            with open(os.path.join(tensorboard_logdir, "train_loss.txt"), "a") as f:
-                f.write(f"{epoch * len(dataloader) + batch_idx},{loss.item()}\n")
+        # Log to wandb
         if wandb_enabled:
             wandb.log({"Train Loss": loss.item()})
 
@@ -139,7 +145,7 @@ def validate(model, dataloader, criterion, device, tensorboard_logdir=None, wand
     total = 0
     with torch.no_grad():
         loop = tqdm(dataloader, desc="Validation")
-        for batch_idx, (images, labels) in enumerate(loop):
+        for images, labels in loop:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -148,40 +154,14 @@ def validate(model, dataloader, criterion, device, tensorboard_logdir=None, wand
             correct += predicted.eq(labels).sum().item()
             total += labels.size(0)
 
-            # Log system utilization
-            log_system_utilization(
-                device, wandb_enabled, tensorboard_logdir,
-                epoch=epoch, step=epoch * len(dataloader) + batch_idx
-            )
-
     avg_loss = total_loss / len(dataloader)
     accuracy = 100.0 * correct / total
 
-    # Log to TensorBoard and wandb
-    if tensorboard_logdir:
-        with open(os.path.join(tensorboard_logdir, "val_metrics.txt"), "a") as f:
-            f.write(f"{epoch},{avg_loss},{accuracy}\n")
+    # Log to wandb
     if wandb_enabled:
         wandb.log({"Validation Loss": avg_loss, "Validation Accuracy": accuracy})
 
     return avg_loss, accuracy
-
-
-
-def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth", amp_mode="none"):
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'amp_mode': amp_mode,
-    }, path)
-
-
-def load_checkpoint(model, optimizer, path="checkpoint.pth"):
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    return checkpoint['epoch'], checkpoint.get('amp_mode', 'none')
 
 
 def main():
@@ -192,7 +172,11 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--log_file", type=str, default="training_log.txt")
-    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
+    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
+    parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
+    parser.add_argument("--use_snapshot", action="store_true", help="Enable snapshot functionality")
+    parser.add_argument("--snapshot_path", type=str, default="snapshot.pth", help="Path to save/load the snapshot")
     parser.add_argument("--model_name", type=str, default="resnet50")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--finetune", action="store_true")
@@ -250,17 +234,25 @@ def main():
     best_val_loss = float('inf')
     start_epoch = 1
 
-    # Initialize TensorBoard and wandb
-    if args.use_tensorboard:
-        os.makedirs(args.tensorboard_logdir, exist_ok=True)
 
+    # Resume from checkpoint if specified and enabled
+    if args.use_checkpoint and args.resume and os.path.exists(args.checkpoint_path):
+        start_epoch, _ = load_checkpoint(model, optimizer, path=args.checkpoint_path)
+
+    # Resume from snapshot if specified and enabled
+    if args.use_snapshot and args.resume and os.path.exists(args.snapshot_path):
+        start_epoch, best_val_loss = load_snapshot(model, optimizer, scheduler, scaler, args.snapshot_path)
+
+    # Initialize wandb
     if args.use_wandb:
         os.environ["WANDB_MODE"] = args.wandb_mode
         wandb.init(project=args.wandb_project, config=vars(args))
 
-    if args.resume and os.path.exists("best_model.pth"):
-        start_epoch, _ = load_checkpoint(model, optimizer, path="best_model.pth")
-        logging.info(f"Resuming from epoch {start_epoch}")
+    # Initialize TensorBoard log directory
+    if args.use_tensorboard:
+        os.makedirs(args.tensorboard_logdir, exist_ok=True)
+
+
 
     with open(args.metrics_csv, mode='w', newline='') as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -282,10 +274,13 @@ def main():
             logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
             csv_writer.writerow([epoch, avg_train_loss, avg_val_loss, val_accuracy])
 
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                save_checkpoint(model, optimizer, epoch, path="best_model.pth", amp_mode=args.mixed_precision)
-                logging.info(f"Epoch {epoch}: Saved best model")
+            # Save checkpoint if enabled
+            if args.use_checkpoint:
+                save_checkpoint(model, optimizer, epoch, path=args.checkpoint_path, amp_mode=args.mixed_precision)
+
+            # Save snapshot if enabled
+            if args.use_snapshot:
+                save_snapshot(model, optimizer, scheduler, scaler, epoch, best_val_loss, args.snapshot_path)
 
             early_stopping(avg_val_loss)
             if early_stopping.early_stop:
