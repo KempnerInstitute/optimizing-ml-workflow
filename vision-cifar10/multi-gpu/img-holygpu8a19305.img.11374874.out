@@ -1,0 +1,44 @@
+conda-forge/linux-64                                        Using cache
+conda-forge/noarch                                          Using cache
+Transaction
+
+  Prefix: /n/holylfs06/LABS/kempner_shared/Everyone/common_envs/miniconda3/envs/pytorch_image
+
+  All requested packages already installed
+
+
+Looking for: ['tensorboard']
+
+
+Pinned packages:
+  - python 3.12.*
+
+
+29500
+MASTER_ADDR MASTER_PORT WORLD_SIZE
+10.31.144.184 29500 4
+torchrun --nproc_per_node 2 --nnodes 2 --rdzv_id=11374874 --rdzv_backend=c10d --rdzv_endpoint 10.31.144.184:29500 ./cifar_monitor_ddp.py --data_path /n/holylfs06/LABS/kempner_shared/Everyone/testbed/vision/cifar10 --metrics_csv results.csv --sample_ratio 1.0 --batch_size 512 --num_epochs 10 --learning_rate 0.0005 --model_name resnet50 --mixed_precision auto --pin_memory False --tensorboard_csv ./tensorboard.csv --use_checkpoint --checkpoint_path best_model.pth --use_snapshot --snapshot_path snapshot.pth --use_wandb --wandb_mode online --wandb_project optimize-ml-workflow
+Execution time : 00:02:11
+=============================
+Job ID: 11374874
+Cluster: odyssey
+User/Group: bdesinghu/univ_rc
+State: RUNNING
+Nodes: 2
+Cores per node: 16
+CPU Utilized: 00:00:00
+CPU Efficiency: 0.00% of 01:17:52 core-walltime
+Job Wall-clock time: 00:02:26
+Memory Utilized: 652.00 KB
+Memory Efficiency: 0.00% of 256.00 GB (128.00 GB/node)
+WARNING: Efficiency statistics can only be obtained after the job has ended as seff tool is based on the accounting database data.
+=============================
+JobID           JobName  Partition    Account  AllocCPUS      State ExitCode    Elapsed     MaxRSS  MaxVMSize 
+------------ ---------- ---------- ---------- ---------- ---------- -------- ---------- ---------- ---------- 
+11374874            img kempner_d+ kempner_d+         32    RUNNING      0:0   00:02:26                       
+11374874.ba+      batch            kempner_d+         16    RUNNING      0:0   00:02:26                       
+11374874.ex+     extern            kempner_d+         32    RUNNING      0:0   00:02:26                       
+11374874.0     hostname            kempner_d+         16  COMPLETED      0:0   00:00:01       652K          0 
+11374874.1     torchrun            kempner_d+         32    RUNNING      0:0   00:02:11                       
+=============================
+Job Completed

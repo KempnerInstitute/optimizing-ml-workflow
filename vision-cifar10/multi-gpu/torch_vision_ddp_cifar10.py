@@ -1,19 +1,21 @@
-# filename: train_distributed_cifar10.py
-
 import os
+import time
 import argparse
 import logging
 import csv
+import psutil  # For CPU utilization
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, DistributedSampler, random_split, Subset
+from torch.utils.data import DataLoader, random_split, Subset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
+import wandb
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 
 
 class EarlyStopping:
@@ -34,18 +36,19 @@ class EarlyStopping:
                 self.early_stop = True
 
 
-def setup_distributed():
+def setup_ddp():
+    """Initialize the distributed process group."""
     dist.init_process_group(backend="nccl")
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    local_rank = rank % torch.cuda.device_count()
-    return local_rank, rank, world_size
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 
 
-def get_dataloader(batch_size, world_size, rank, transform, validation_split=0.2, sample_ratio=1.0, data_path="./data", num_workers=4):
-    if not os.path.exists(data_path):
-        os.makedirs(data_path)
+def cleanup_ddp():
+    """Destroy the distributed process group."""
+    dist.destroy_process_group()
 
+
+def get_dataloader(batch_size, transform, validation_split=0.2, sample_ratio=1.0, data_path="./data", num_workers=4, pin_memory=True, distributed=False):
+    os.makedirs(data_path, exist_ok=True)
     dataset = torchvision.datasets.CIFAR10(root=data_path, train=True, download=True, transform=transform)
 
     if sample_ratio < 1.0:
@@ -56,31 +59,48 @@ def get_dataloader(batch_size, world_size, rank, transform, validation_split=0.2
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
-    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, num_workers=num_workers, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    if distributed:
+        train_sampler = DistributedSampler(train_dataset)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(train_sampler is None), sampler=train_sampler, num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, sampler=val_sampler, num_workers=num_workers, pin_memory=pin_memory)
 
     return train_loader, val_loader, train_sampler
 
 
 def build_model(model_name='resnet50', num_classes=10, finetune=True):
-    model_func = getattr(torchvision.models, model_name)
-    model = model_func(pretrained=True)
+    model = getattr(torchvision.models, model_name)(pretrained=True)
     if finetune:
         for param in model.parameters():
             param.requires_grad = False
     if hasattr(model, 'fc'):
         model.fc = nn.Linear(model.fc.in_features, num_classes)
-        for param in model.fc.parameters():
-            param.requires_grad = True
     return model
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, rank, epoch, use_amp, amp_dtype):
+def log_gpu_utilization(csv_writer, wandb_enabled, global_step):
+    """Log GPU utilization and memory usage."""
+    gpu_utilization = torch.cuda.utilization()
+    gpu_memory = torch.cuda.memory_allocated() / (1024 ** 3)  # Convert to GB
+
+    if wandb_enabled and dist.get_rank() == 0:
+        wandb.log({"GPU Utilization": gpu_utilization, "GPU Memory (GB)": gpu_memory})
+
+    if csv_writer:
+        csv_writer.writerow([global_step, "GPU Utilization", gpu_utilization])
+        csv_writer.writerow([global_step, "GPU Memory (GB)", gpu_memory])
+
+
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, wandb_enabled, global_step):
     model.train()
     total_loss = 0.0
-    loop = tqdm(dataloader, desc=f"Rank {rank}, Epoch {epoch}", disable=(rank != 0))
-    for images, labels in loop:
+    loop = tqdm(dataloader, desc=f"Epoch {epoch}", disable=(dist.get_rank() != 0))
+
+    for batch_idx, (images, labels) in enumerate(loop):
         images, labels = images.to(device), labels.to(device)
         with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
             outputs = model(images)
@@ -90,16 +110,26 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, ran
         scaler.step(optimizer)
         scaler.update()
         total_loss += loss.item()
-    return total_loss / len(dataloader)
+
+        # Log to WandB
+        if wandb_enabled and dist.get_rank() == 0:
+            wandb.log({"Train Loss": loss.item()})
+
+        # Log to CSV
+        if csv_writer:
+            csv_writer.writerow([global_step, "Train Loss", loss.item()])
+            global_step += 1
+
+    return total_loss / len(dataloader), global_step
 
 
-def validate(model, dataloader, criterion, device, rank):
+def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, epoch):
     model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
     with torch.no_grad():
-        loop = tqdm(dataloader, desc=f"Rank {rank}, Validation", disable=(rank != 0))
+        loop = tqdm(dataloader, desc="Validation", disable=(dist.get_rank() != 0))
         for images, labels in loop:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
@@ -108,26 +138,20 @@ def validate(model, dataloader, criterion, device, rank):
             _, predicted = outputs.max(1)
             correct += predicted.eq(labels).sum().item()
             total += labels.size(0)
+
     avg_loss = total_loss / len(dataloader)
     accuracy = 100.0 * correct / total
+
+    # Log to WandB
+    if wandb_enabled and dist.get_rank() == 0:
+        wandb.log({"Validation Loss": avg_loss, "Validation Accuracy": accuracy})
+
+    # Log to CSV
+    if csv_writer:
+        csv_writer.writerow([epoch, "Validation Loss", avg_loss])
+        csv_writer.writerow([epoch, "Validation Accuracy", accuracy])
+
     return avg_loss, accuracy
-
-
-def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth", amp_mode="none"):
-    torch.save({
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'amp_mode': amp_mode,
-    }, path)
-
-
-def load_checkpoint(model, optimizer, path="checkpoint.pth"):
-    checkpoint = torch.load(path)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    amp_mode = checkpoint.get('amp_mode', 'unknown')
-    return checkpoint['epoch'], amp_mode
 
 
 def main():
@@ -138,39 +162,37 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--log_file", type=str, default="training_log.txt")
-    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
+    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
+    parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
+    parser.add_argument("--use_snapshot", action="store_true", help="Enable snapshot functionality")
+    parser.add_argument("--snapshot_path", type=str, default="snapshot.pth", help="Path to save/load the snapshot")
     parser.add_argument("--model_name", type=str, default="resnet50")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--finetune", action="store_true")
     parser.add_argument("--num_classes", type=int, default=10)
     parser.add_argument("--scheduler", type=str, default="step", choices=["step", "cosine", "none"])
     parser.add_argument("--mixed_precision", type=str, default="none", choices=["none", "fp16", "bf16", "auto"])
-    parser.add_argument("--metrics_csv", type=str, default="metrics.csv", help="Path to save CSV metrics")
+    parser.add_argument("--metrics_csv", type=str, default="metrics.csv")
+    parser.add_argument("--tensorboard_csv", type=str, default="tensorboard_logs.csv", help="CSV file for TensorBoard logs")
+    parser.add_argument("--pin_memory", type=bool, default=True, help="Whether to use pinned memory for DataLoader")
+    parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline"], help="WandB mode: online or offline")
+    parser.add_argument("--wandb_project", type=str, default="training-monitoring", help="WandB project name")
     args = parser.parse_args()
+
+    setup_ddp()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    device = torch.device(f"cuda:{local_rank}")
 
     logging.basicConfig(filename=args.log_file, level=logging.INFO, format="%(asctime)s - %(message)s")
 
-    local_rank, rank, world_size = setup_distributed()
-    device = torch.device("cuda", local_rank)
-
-    gpu_name = torch.cuda.get_device_name(local_rank)
-    capability = torch.cuda.get_device_capability(local_rank)
     supports_bf16 = torch.cuda.is_bf16_supported()
-
     if args.mixed_precision == "auto":
         args.mixed_precision = "bf16" if supports_bf16 else "fp16"
-
     if args.mixed_precision == "bf16" and not supports_bf16:
-        if rank == 0:
-            logging.warning("bf16 requested but not supported on this GPU. Training may fail.")
-
-    if not torch.cuda.is_available() and args.mixed_precision != "none":
-        if rank == 0:
-            logging.warning("AMP requested but no CUDA device found. Training may crash.")
-
-    if rank == 0:
-        logging.info(f"Using GPU: {gpu_name}, capability: {capability}, bf16 supported: {supports_bf16}")
-        logging.info(f"Using mixed precision: {args.mixed_precision}")
+        logging.warning("bf16 not supported on this GPU. Using fp16 instead.")
+        args.mixed_precision = "fp16"
 
     use_amp = args.mixed_precision in ["fp16", "bf16"]
     amp_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
@@ -185,12 +207,12 @@ def main():
     ])
 
     train_loader, val_loader, train_sampler = get_dataloader(
-        args.batch_size, world_size, rank, transform,
-        sample_ratio=args.sample_ratio, data_path=args.data_path, num_workers=args.num_workers
+        args.batch_size, transform,
+        sample_ratio=args.sample_ratio, data_path=args.data_path, num_workers=args.num_workers, distributed=True
     )
 
-    model = build_model(args.model_name, num_classes=args.num_classes, finetune=args.finetune).to(device)
-    model = DDP(model, device_ids=[local_rank])
+    model = build_model(args.model_name, args.num_classes, finetune=args.finetune).to(device)
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -206,47 +228,56 @@ def main():
     best_val_loss = float('inf')
     start_epoch = 1
 
-    if args.resume and os.path.exists("best_model.pth"):
-        start_epoch, saved_amp_mode = load_checkpoint(model, optimizer, path="best_model.pth")
-        logging.info(f"Resuming training from epoch {start_epoch}, saved AMP mode: {saved_amp_mode}")
+    # Initialize WandB
+    if args.use_wandb and dist.get_rank() == 0:
+        wandb.init(
+            project=args.wandb_project,
+            config=vars(args),
+            group="experiment_group",
+            job_type="training"
+        )
+        wandb.watch(model, log="all", log_freq=100)
 
-    if rank == 0:
-        csv_file = open(args.metrics_csv, mode='w', newline='')
-        csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(["epoch", "train_loss", "val_loss", "val_accuracy"])
+    # Open CSV file for TensorBoard logs
+    csv_file = open(args.tensorboard_csv, mode='w', newline='')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(["Step/Epoch", "Metric", "Value"])
 
+    global_step = 0
     for epoch in range(start_epoch, args.num_epochs + 1):
-        train_sampler.set_epoch(epoch)
-        avg_train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, rank, epoch, use_amp, amp_dtype)
-        avg_val_loss, val_accuracy = validate(model, val_loader, criterion, device, rank)
+        if train_sampler:
+            train_sampler.set_epoch(epoch)
+
+        avg_train_loss, global_step = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, args.use_wandb, global_step
+        )
+        avg_val_loss, val_accuracy = validate(
+            model, val_loader, criterion, device, csv_writer, args.use_wandb, epoch
+        )
 
         if scheduler:
             scheduler.step()
 
-        if rank == 0:
-            mem_allocated = torch.cuda.memory_allocated(device) / (1024**3)
-            mem_reserved = torch.cuda.memory_reserved(device) / (1024**3)
-            logging.info(f"Memory used: allocated={mem_allocated:.2f}GB, reserved={mem_reserved:.2f}GB")
+        if dist.get_rank() == 0:
             logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
 
-            csv_writer.writerow([epoch, avg_train_loss, avg_val_loss, val_accuracy])
-
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                save_checkpoint(model, optimizer, epoch, path="best_model.pth", amp_mode=args.mixed_precision)
-                logging.info(f"Epoch {epoch}: Best model saved with validation loss {avg_val_loss:.4f}")
-
-            early_stopping(avg_val_loss)
-            if early_stopping.early_stop:
+        early_stopping(avg_val_loss)
+        if early_stopping.early_stop:
+            if dist.get_rank() == 0:
                 logging.info("Early stopping triggered.")
-                break
+            break
 
-    if rank == 0:
-        csv_file.close()
+        # Log GPU utilization
+        log_gpu_utilization(csv_writer, args.use_wandb, global_step)
 
-    dist.destroy_process_group()
+    if args.use_wandb and dist.get_rank() == 0:
+        wandb.finish()
+
+    csv_file.close()
+    cleanup_ddp()
 
 
 if __name__ == "__main__":
     main()
+
 
