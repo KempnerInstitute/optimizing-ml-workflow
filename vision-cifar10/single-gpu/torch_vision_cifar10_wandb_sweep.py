@@ -310,6 +310,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Parse arguments
+    args = parse_arguments()
+
     # Define sweep configuration
     sweep_config = {
         'method': 'grid',  # Can be 'grid', 'random', or 'bayes'
@@ -335,9 +338,6 @@ if __name__ == "__main__":
 
     # Initialize sweep
     sweep_id = wandb.sweep(sweep_config, project=args.wandb_project)
-
-    # Parse arguments
-    args = parse_arguments()
 
     # Run sweep
     wandb.agent(sweep_id, function=main)
