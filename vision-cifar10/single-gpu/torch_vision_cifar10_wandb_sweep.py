@@ -333,11 +333,11 @@ if __name__ == "__main__":
         }
     }
 
-    # Parse arguments
-    args = parse_arguments()
-
     # Initialize sweep
     sweep_id = wandb.sweep(sweep_config, project=args.wandb_project)
+
+    # Parse arguments
+    args = parse_arguments()
 
     # Run sweep
     wandb.agent(sweep_id, function=main)
