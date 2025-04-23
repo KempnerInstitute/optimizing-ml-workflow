@@ -36,18 +36,23 @@ class EarlyStopping:
                 self.early_stop = True
 
 
-def setup_ddp():
+def setup_distributed():
     """Initialize the distributed process group."""
-    dist.init_process_group(backend="nccl")
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = rank % torch.cuda.device_count()
+    return local_rank, rank, world_size
 
 
 def cleanup_ddp():
     """Destroy the distributed process group."""
-    dist.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
-def get_dataloader(batch_size, transform, validation_split=0.2, sample_ratio=1.0, data_path="./data", num_workers=4, pin_memory=True, distributed=False):
+def get_dataloader(batch_size, transform, validation_split=0.2, sample_ratio=1.0, data_path="./data", num_workers=4, pin_memory=True, distributed=False, rank=0):
     os.makedirs(data_path, exist_ok=True)
     dataset = torchvision.datasets.CIFAR10(root=data_path, train=True, download=True, transform=transform)
 
@@ -60,8 +65,8 @@ def get_dataloader(batch_size, transform, validation_split=0.2, sample_ratio=1.0
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
 
     if distributed:
-        train_sampler = DistributedSampler(train_dataset)
-        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+        train_sampler = DistributedSampler(train_dataset, rank=rank)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False, rank=rank)
     else:
         train_sampler = None
         val_sampler = None
@@ -82,23 +87,22 @@ def build_model(model_name='resnet50', num_classes=10, finetune=True):
     return model
 
 
-def log_gpu_utilization(csv_writer, wandb_enabled, global_step):
+def log_gpu_utilization(csv_writer, wandb_enabled, global_step, rank):
     """Log GPU utilization and memory usage."""
     gpu_utilization = torch.cuda.utilization()
     gpu_memory = torch.cuda.memory_allocated() / (1024 ** 3)  # Convert to GB
 
-    if wandb_enabled and dist.get_rank() == 0:
+    if wandb_enabled and rank == 0:
         wandb.log({"GPU Utilization": gpu_utilization, "GPU Memory (GB)": gpu_memory})
 
     if csv_writer:
         csv_writer.writerow([global_step, "GPU Utilization", gpu_utilization])
         csv_writer.writerow([global_step, "GPU Memory (GB)", gpu_memory])
 
-
-def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, wandb_enabled, global_step):
+def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, wandb_enabled, global_step, rank):
     model.train()
     total_loss = 0.0
-    loop = tqdm(dataloader, desc=f"Epoch {epoch}", disable=(dist.get_rank() != 0))
+    loop = tqdm(dataloader, desc=f"Epoch {epoch}", disable=(rank != 0))
 
     for batch_idx, (images, labels) in enumerate(loop):
         images, labels = images.to(device), labels.to(device)
@@ -112,7 +116,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
         total_loss += loss.item()
 
         # Log to WandB
-        if wandb_enabled and dist.get_rank() == 0:
+        if wandb_enabled and rank == 0:
             wandb.log({"Train Loss": loss.item()})
 
         # Log to CSV
@@ -122,14 +126,13 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
 
     return total_loss / len(dataloader), global_step
 
-
-def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, epoch):
+def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, epoch, rank):
     model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
     with torch.no_grad():
-        loop = tqdm(dataloader, desc="Validation", disable=(dist.get_rank() != 0))
+        loop = tqdm(dataloader, desc="Validation", disable=(rank != 0))
         for images, labels in loop:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
@@ -143,7 +146,7 @@ def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, ep
     accuracy = 100.0 * correct / total
 
     # Log to WandB
-    if wandb_enabled and dist.get_rank() == 0:
+    if wandb_enabled and rank == 0:
         wandb.log({"Validation Loss": avg_loss, "Validation Accuracy": accuracy})
 
     # Log to CSV
@@ -154,7 +157,43 @@ def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, ep
     return avg_loss, accuracy
 
 
-def main():
+def training_loop(args, model, train_loader, val_loader, train_sampler, criterion, optimizer, scheduler, scaler, device, csv_writer, use_amp, amp_dtype, rank):
+    """Main training loop."""
+    early_stopping = EarlyStopping(patience=5)
+    best_val_loss = float('inf')
+    start_epoch = 1
+    global_step = 0
+
+    for epoch in range(start_epoch, args.num_epochs + 1):
+        if train_sampler:
+            train_sampler.set_epoch(epoch)
+
+        avg_train_loss, global_step = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, args.use_wandb, global_step, rank
+        )
+        avg_val_loss, val_accuracy = validate(
+            model, val_loader, criterion, device, csv_writer, args.use_wandb, epoch, rank
+        )
+
+        if scheduler:
+            scheduler.step()
+
+        if rank == 0:
+            logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
+
+        early_stopping(avg_val_loss)
+        if early_stopping.early_stop:
+            if rank == 0:
+                logging.info("Early stopping triggered.")
+            break
+
+        # Log GPU utilization
+        log_gpu_utilization(csv_writer, args.use_wandb, global_step, rank)
+
+
+
+def parse_arguments():
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default="./data")
     parser.add_argument("--sample_ratio", type=float, default=1.0)
@@ -179,14 +218,20 @@ def main():
     parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging")
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline"], help="WandB mode: online or offline")
     parser.add_argument("--wandb_project", type=str, default="training-monitoring", help="WandB project name")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    setup_ddp()
-    local_rank = int(os.environ["LOCAL_RANK"])
-    device = torch.device(f"cuda:{local_rank}")
 
+def main(local_rank, rank, world_size, args):
     logging.basicConfig(filename=args.log_file, level=logging.INFO, format="%(asctime)s - %(message)s")
 
+    device = torch.device("cuda", local_rank)
+
+    # Print system info
+    gpu_name = torch.cuda.get_device_name(local_rank)
+    capability = torch.cuda.get_device_capability(local_rank)
+    print(f"hostname={os.uname()[1]}, global rank={rank}, local_rank={local_rank}, world_size={world_size}, device={device}, gpu_name={gpu_name}, capability={capability}")
+
+    # Mixed precision setup
     supports_bf16 = torch.cuda.is_bf16_supported()
     if args.mixed_precision == "auto":
         args.mixed_precision = "bf16" if supports_bf16 else "fp16"
@@ -198,6 +243,7 @@ def main():
     amp_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
+    # Data preparation
     transform = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.RandomCrop(32, padding=4),
@@ -205,12 +251,11 @@ def main():
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
-
     train_loader, val_loader, train_sampler = get_dataloader(
-        args.batch_size, transform,
-        sample_ratio=args.sample_ratio, data_path=args.data_path, num_workers=args.num_workers, distributed=True
+        args.batch_size, transform, sample_ratio=args.sample_ratio, data_path=args.data_path, num_workers=args.num_workers, distributed=True, rank=rank
     )
 
+    # Model, optimizer, and scheduler
     model = build_model(args.model_name, args.num_classes, finetune=args.finetune).to(device)
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
@@ -224,12 +269,8 @@ def main():
     else:
         scheduler = None
 
-    early_stopping = EarlyStopping(patience=5)
-    best_val_loss = float('inf')
-    start_epoch = 1
-
     # Initialize WandB
-    if args.use_wandb and dist.get_rank() == 0:
+    if args.use_wandb and rank == 0:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
@@ -243,34 +284,10 @@ def main():
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow(["Step/Epoch", "Metric", "Value"])
 
-    global_step = 0
-    for epoch in range(start_epoch, args.num_epochs + 1):
-        if train_sampler:
-            train_sampler.set_epoch(epoch)
+    # Training loop
+    training_loop(args, model, train_loader, val_loader, train_sampler, criterion, optimizer, scheduler, scaler, device, csv_writer, use_amp, amp_dtype, rank)
 
-        avg_train_loss, global_step = train_one_epoch(
-            model, train_loader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, args.use_wandb, global_step
-        )
-        avg_val_loss, val_accuracy = validate(
-            model, val_loader, criterion, device, csv_writer, args.use_wandb, epoch
-        )
-
-        if scheduler:
-            scheduler.step()
-
-        if dist.get_rank() == 0:
-            logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
-
-        early_stopping(avg_val_loss)
-        if early_stopping.early_stop:
-            if dist.get_rank() == 0:
-                logging.info("Early stopping triggered.")
-            break
-
-        # Log GPU utilization
-        log_gpu_utilization(csv_writer, args.use_wandb, global_step)
-
-    if args.use_wandb and dist.get_rank() == 0:
+    if args.use_wandb and rank == 0:
         wandb.finish()
 
     csv_file.close()
@@ -278,6 +295,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Parse arguments
+    args = parse_arguments()
+
+    # Setup distributed training
+    local_rank, rank, world_size = setup_distributed()
+
+    # Call main with distributed parameters
+    main(local_rank, rank, world_size, args)
 
 
