@@ -106,6 +106,9 @@ python train.py --use-wandb
 
 ---
 
-For performance benchmarking of Resnet and AlexNet models refer: https://github.com/KempnerInstitute/scalable-vision-workflows
-Workflows related to LLMs such as Llama3 and GPT with NeMo framework are available in here: https://github.com/KempnerInstitute/nvidia-nemo-workflows
+## More Workflow Examples
+
+- For performance benchmarking of Resnet and AlexNet models refer: https://github.com/KempnerInstitute/scalable-vision-workflows
+
+- Workflows related to LLMs such as Llama3 and GPT with NeMo framework are available in here: https://github.com/KempnerInstitute/nvidia-nemo-workflows
 
