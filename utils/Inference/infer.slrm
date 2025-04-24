@@ -1,0 +1,28 @@
+#! /bin/bash
+#SBATCH --job-name=img
+#SBATCH --partition=kempner_dev
+#SBATCH --account=kempner_dev
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=256G
+#SBATCH --time=12:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+
+
+
+DATADIR="/n/holylfs06/LABS/kempner_shared/Lab/data/imagenet_1k"
+TRAIN_DS="${DATADIR}/train"
+VAL_DS="${DATADIR}/val"
+
+CONTAINER_PATH=/n/holylabs/LABS/kempner_dev/Lab/containers/pytorch_2.1.2-cuda12.1-cudnn8-runtime.sif
+
+
+export CMD="python ./infer.py" 
+echo $CMD 
+srun -l singularity run --nv $CONTAINER_PATH $CMD
+
+echo "Job Completed"
+
