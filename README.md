@@ -8,7 +8,7 @@ This repository provides practical and scalable deep learning training pipelines
 
 -  Modular, extensible training pipelines
 -  Single-GPU and Multi-GPU (DDP) support
--  Mixed precision training (`--mixed_precision`)
+-  Mixed precision training 
 -  Early stopping
 -  Auto checkpointing and resume
 -  Metrics logging (CSV + optional Weights & Biases)
