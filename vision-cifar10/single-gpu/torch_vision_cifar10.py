@@ -3,7 +3,7 @@ import time
 import argparse
 import logging
 import csv
-import psutil  # For CPU utilization
+import psutil  
 import torch
 import torch.nn as nn
 import torch.optim as optim
