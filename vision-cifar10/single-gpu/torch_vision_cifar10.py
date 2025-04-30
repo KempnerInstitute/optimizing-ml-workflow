@@ -14,23 +14,23 @@ from tqdm import tqdm
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 import wandb
 
+def early_stopping(val_loss, best_loss, patience_counter, patience=5, delta=0):
+    """
+    Returns:
+        tuple: (should_stop, updated_best_loss, updated_patience_counter)
+            - should_stop (bool): Whether to stop training.
+            - updated_best_loss (float): Updated best validation loss.
+            - updated_patience_counter (int): Updated patience counter.
+    """
+    if val_loss < best_loss - delta:
+        best_loss = val_loss
+        patience_counter = 0
+    else:
+        patience_counter += 1
+        if patience_counter >= patience:
+            return True, best_loss, patience_counter
 
-class EarlyStopping:
-    def __init__(self, patience=5, delta=0):
-        self.patience = patience
-        self.delta = delta
-        self.best_loss = float('inf')
-        self.counter = 0
-        self.early_stop = False
-
-    def __call__(self, val_loss):
-        if val_loss < self.best_loss - self.delta:
-            self.best_loss = val_loss
-            self.counter = 0
-        else:
-            self.counter += 1
-            if self.counter >= self.patience:
-                self.early_stop = True
+    return False, best_loss, patience_counter
 
 
 def get_dataloader(batch_size, transform, validation_split=0.2, sample_ratio=1.0, data_path="./data", num_workers=4, pin_memory=True):
@@ -164,7 +164,10 @@ def validate(model, dataloader, criterion, device, tensorboard_logdir=None, wand
     return avg_loss, accuracy
 
 
-def main():
+def arg_parser():
+    """
+    Creates and returns the argument parser for the program.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default="./data")
     parser.add_argument("--sample_ratio", type=float, default=1.0)
@@ -190,6 +193,11 @@ def main():
     parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline"], help="WandB mode: online or offline")
     parser.add_argument("--wandb_project", type=str, default="training-monitoring", help="WandB project name")
     parser.add_argument("--tensorboard_logdir", type=str, default="./tensorboard_logs", help="Directory for TensorBoard logs")
+    return parser
+
+
+def main():
+    parser = arg_parser()
     args = parser.parse_args()
 
     logging.basicConfig(filename=args.log_file, level=logging.INFO, format="%(asctime)s - %(message)s")
@@ -230,10 +238,13 @@ def main():
     else:
         scheduler = None
 
-    early_stopping = EarlyStopping(patience=5)
+    # Initialize variables for early stopping
     best_val_loss = float('inf')
-    start_epoch = 1
+    patience_counter = 0
+    patience = 5  # Number of epochs to wait before stopping
+    delta = 0  # Minimum improvement threshold
 
+    start_epoch = 1
 
     # Resume from checkpoint if specified and enabled
     if args.use_checkpoint and args.resume and os.path.exists(args.checkpoint_path):
@@ -282,8 +293,12 @@ def main():
             if args.use_snapshot:
                 save_snapshot(model, optimizer, scheduler, scaler, epoch, best_val_loss, args.snapshot_path)
 
-            early_stopping(avg_val_loss)
-            if early_stopping.early_stop:
+
+            # Check for early stopping
+            should_stop, best_val_loss, patience_counter = early_stopping(
+                avg_val_loss, best_val_loss, patience_counter, patience=patience, delta=delta
+            )
+            if should_stop:
                 logging.info("Early stopping triggered.")
                 break
 
