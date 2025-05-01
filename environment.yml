@@ -1,0 +1,21 @@
+name: pytorch_vision
+channels:
+  - conda-forge
+  - defaults
+  - anaconda
+dependencies:
+  - python=3.12  # or whatever version you need
+  - pip
+  - pip:
+      - torch
+      - torchvision
+      - tqdm
+      - pillow
+      - triton
+      - psutil
+      - wandb
+      - pynvml
+      - nvidia-ml-py
+      - tensorboard
+      - nvidia-dali-cuda120 --extra-index-url https://pypi.nvidia.com
+
