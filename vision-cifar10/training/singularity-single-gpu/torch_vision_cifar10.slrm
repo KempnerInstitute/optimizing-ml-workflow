@@ -1,0 +1,68 @@
+#! /bin/bash
+#SBATCH --job-name=res
+#SBATCH --partition=kempner_dev
+#SBATCH --account=kempner_dev
+#SBATCH --constraint=a100|h100
+#SBATCH --requeue 
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=1:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+
+export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
+export CONTAINER_FILE="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/singularity_image/pytorch_2.1.2-cuda12.1-cudnn8-runtime-wandb.sif"
+
+export CMD="python torch_vision_cifar10.py \
+  --data_path $DATA_PATH \
+  --metrics_csv results.csv \
+  --sample_ratio 1.0 \
+  --batch_size 512 \
+  --num_epochs 10 \
+  --learning_rate 0.0005 \
+  --model_name resnet50 \
+  --mixed_precision auto \
+  --pin_memory False \
+  --use_tensorboard  \
+  --use_checkpoint --checkpoint_path best_model.pth \
+  --use_snapshot --snapshot_path snapshot.pth \
+  --use_wandb --wandb_mode online --wandb_project "optimize-ml-workflow"
+
+ "
+
+echo $CMD 
+
+export SINGULARITY_BIND="/etc/nsswitch.conf,/etc/slurm,/lib64/libnss_sss.so.2:/lib/libnss_sss.so.2,/var/run/munge:/run/munge,/slurm,/usr/bin/sacct,/usr/bin/salloc,/usr/bin/sbatch,/usr/bin/scancel,/usr/bin/scontrol,/usr/bin/scrontab,/usr/bin/seff,/usr/bin/sinfo,/usr/bin/squeue,/usr/bin/srun,/usr/bin/sshare,/usr/bin/sstat,/usr/bin/strace,/usr/lib64/libmunge.so.2,/usr/lib64/slurm,/var/lib/sss,/etc/pki/ca-trust/extracted/pem/,/sys,/etc/ssl/certs/,/usr/lib64/pmix,"
+
+
+# Start time
+start_time=$(date +%s)
+
+srun -l singularity run --nv $CONTAINER_FILE $CMD
+
+echo "Job Completed"
+
+#End time
+end_time=$(date +%s)
+
+# Calculate the elapsed time
+elapsed_time=$((end_time - start_time))
+
+# Convert elapsed time to Hours:Minutes:Seconds format
+hours=$((elapsed_time / 3600))
+minutes=$(((elapsed_time % 3600) / 60))
+seconds=$((elapsed_time % 60))
+
+# Print the execution time
+printf "Execution time : %02d:%02d:%02d\n" "$hours" "$minutes" "$seconds"
+
+echo "============================="
+seff $SLURM_JOB_ID
+
+echo "============================="
+sacct -j $SLURM_JOB_ID --format=JobID,JobName,Partition,Account,AllocCPUs,State,ExitCode,Elapsed,MaxRSS,MaxVMSize
+echo "============================="
+

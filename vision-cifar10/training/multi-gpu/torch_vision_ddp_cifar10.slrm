@@ -12,13 +12,15 @@
 #SBATCH --error=img-%N.%x.%j.err
 #SBATCH --constraint=a100|h100
 
+export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
+export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
+source ~/.ssh/wandb_key.sh
+
 module load cuda
 module load cudnn
 module load python
+conda activate $CONDA_ENV
 
-conda activate  /n/holylfs06/LABS/kempner_shared/Everyone/common_envs/miniconda3/envs/pytorch_image
-export DATA_PATH="/n/holylfs06/LABS/kempner_shared/Everyone/testbed/vision/cifar10"
-mamba install tensorboard
 
 # Check and set N_GPUS_ON_NODE based on available SLURM variables
 if [[ -n "$SLURM_GPUS_ON_NODE" ]]; then
@@ -35,7 +37,7 @@ fi
 
 export GPUS_ON_NODE=$N_GPUS_ON_NODE
 export NNODES=$SLURM_NNODES
-WORLD_SIZE=$(($GPUS_ON_NODE*$NNODES))
+export WORLD_SIZE=$(($GPUS_ON_NODE*$NNODES))
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 nodes_array=($nodes)
@@ -70,7 +72,6 @@ export CMD="torchrun \
   --use_wandb --wandb_mode online --wandb_project "optimize-ml-workflow"
 
  "
-source ~/.ssh/wandb_key.sh
 
 # Start time
 start_time=$(date +%s)
