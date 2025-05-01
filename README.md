@@ -32,10 +32,17 @@ optimizing-ml-workflow/
 
 ##  Getting Started
 
-###  Install Dependencies
-We will create a conda environment and install the required packages such as pytorch, torch-vision, wandb, etc. We wil use some of the existing packages that aravailable in the module environment. 
+###  Clone the repository
 
-Lets load the Python, cuda, and cudnn modules. 
+```bash
+git clone https://github.com/KempnerInstitute/optimizing-ml-workflow.git
+cd optimizing-ml-workflow
+
+```
+
+###  Create Conda Environment
+
+Lets load the Python, cuda, and cudnn modules. This way we don't have to install the required to install the conda manager and the cuda libraries. 
 ```bash
 module load python/3.12.8-fasrc01
 module load cuda/12.4.1-fasrc01
