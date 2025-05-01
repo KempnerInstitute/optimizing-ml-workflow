@@ -33,11 +33,20 @@ optimizing-ml-workflow/
 ##  Getting Started
 
 ###  Install Dependencies
+We will create a conda environment and install the required packages such as pytorch, torch-vision, wandb, etc. We wil use some of the existing packages that aravailable in the module environment. 
 
+Lets load the Python, cuda, and cudnn modules. 
 ```bash
-pip install -r requirements.txt
-```
+module load python/3.12.8-fasrc01
+module load cuda/12.4.1-fasrc01
+module load cudnn/9.5.1.17_cuda12-fasrc01
 
+```
+Use `mamba` or `conda` to create the environment to install the required packages such as pytorch, torch-vision, wandb, etc.,
+```bash
+mamba env create --prefix=<absolute-path-for-conda-env" -f environment.yml
+
+```
 ---
 
 ##  Single-GPU Training
