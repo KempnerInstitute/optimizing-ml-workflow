@@ -14,19 +14,6 @@ This repository provides practical and scalable deep learning training pipelines
 -  Metrics logging (CSV + optional Weights & Biases)
 -  Optional LR schedulers: StepLR, CosineAnnealingLR
 
----
-
-##  Directory Structure
-
-```bash
-optimizing-ml-workflow/
-├── vision-cifar10/
-│   ├── single-gpu/         # Single-GPU CIFAR10 training
-│   └── multi-gpu-ddp/      # Multi-GPU DDP CIFAR10 training
-├── imagenet/               # ImageNet training examples (DDP-ready)
-├── utils/                  # Shared utilities
-└── README.md               # This file
-```
 
 ---
 
