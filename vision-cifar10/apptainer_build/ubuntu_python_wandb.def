@@ -1,0 +1,10 @@
+BootStrap:library
+From: ubuntu
+
+%post
+  # Install python
+  apt update
+  apt install python3 -y
+  apt install pip -y
+  pip install wandb
+

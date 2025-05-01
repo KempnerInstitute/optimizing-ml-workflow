@@ -1,0 +1,22 @@
+BootStrap:library
+From: ubuntu
+
+%environment
+export PATH=/miniconda3/bin:$PATH
+
+
+%post
+    apt-get update 
+    apt-get install -y automake build-essential bzip2 wget git unzip
+
+    # Install miniconda 
+    wget https://repo.continuum.io/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash Miniconda3-latest-Linux-x86_64.sh -b -f -p /miniconda3/
+    rm Miniconda3-latest-Linux-x86_64.sh
+
+    #  make sure conda, pip, etc., are  available 
+    export PATH="/miniconda3/bin:$PATH"
+
+    # Use conda to install pip, numpy
+    conda install -y -c conda-forge pip numpy 
+
