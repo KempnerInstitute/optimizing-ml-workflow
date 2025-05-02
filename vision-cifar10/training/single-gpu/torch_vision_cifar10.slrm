@@ -1,7 +1,7 @@
 #! /bin/bash
-#SBATCH --job-name=res
-#SBATCH --partition=kempner_dev
-#SBATCH --account=kempner_dev
+#SBATCH --job-name=img
+#SBATCH --partition=<partition-name>
+#SBATCH --account=<account-name>
 #SBATCH --constraint=a100|h100
 #SBATCH --requeue 
 #SBATCH --nodes=1
@@ -15,11 +15,12 @@
 
 export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
+source ~/.ssh/wandb_key.sh
 
 module load cuda
 module load cudnn
 module load python
-conda activate $CONDA_ENV 
+conda activate $CONDA_ENV
 
 export CMD="python torch_vision_cifar10.py \
   --data_path $DATA_PATH \
@@ -30,7 +31,7 @@ export CMD="python torch_vision_cifar10.py \
   --learning_rate 0.0005 \
   --model_name resnet50 \
   --mixed_precision auto \
-  --pin_memory False \
+  --pin_memory True \
   --use_tensorboard  \
   --use_checkpoint --checkpoint_path best_model.pth \
   --use_snapshot --snapshot_path snapshot.pth \
