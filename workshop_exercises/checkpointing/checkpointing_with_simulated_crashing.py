@@ -51,10 +51,13 @@ def train_one_epoch(model, dataloader, criterion, optimizer,  device, epoch, wan
         outputs = model(images)
         loss = criterion(outputs, labels)
         optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
         total_loss += loss.item()
 
-    # Log to wandb
     avg_loss = total_loss / len(dataloader)
+    
+    # Log to wandb
     if wandb_enabled:
         wandb.log({"Train Loss": avg_loss}, step=epoch)
 
