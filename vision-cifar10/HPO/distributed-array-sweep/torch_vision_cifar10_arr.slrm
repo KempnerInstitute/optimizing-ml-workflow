@@ -1,0 +1,118 @@
+#! /bin/bash
+#SBATCH --job-name=img
+#SBATCH --partition=kempner_dev,gpu,kempner_eng
+#SBATCH --account=kempner_dev
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=1:00:00
+#SBATCH --output=log_slurm/img-%N.%x.%j.%a.out
+#SBATCH --error=log_slurm/img-%N.%x.%j.%a.err
+#SBATCH --constraint=a100|h100|h200
+#SBATCH --array=1-72%8
+
+export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
+export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
+CSV_FILE="parameter_combinations.csv"
+source ~/.ssh/wandb_key.sh
+
+module load cuda
+module load cudnn
+module load python
+conda activate $CONDA_ENV
+
+
+# Create logs directory if it doesn't exist
+
+
+# Get the current task ID
+TASK_ID=$SLURM_ARRAY_TASK_ID
+
+# Function to extract parameters dynamically
+extract_params() {
+    local csv_file="$1"
+    local task_id="$2"
+    
+    # Get the header line to use as argument names
+    header=$(head -n 1 "$csv_file")
+    
+    # Get the task's parameter line (task_id + 1 to account for header)
+    params_line=$(awk -v line=$((task_id+1)) 'NR==line' "$csv_file")
+    
+    # If no parameters found, exit with error
+    if [ -z "$params_line" ]; then
+        echo "Error: No parameters found for task ID $task_id" >&2
+        exit 1
+    fi
+    
+    # Convert the header and parameters into arrays
+    IFS=',' read -ra header_arr <<< "$header"
+    IFS=',' read -ra params_arr <<< "$params_line"
+    
+    # Build the parameter string
+    param_string=""
+    for i in "${!header_arr[@]}"; do
+        # Skip empty headers or values
+        if [ -n "${header_arr[$i]}" ] && [ -n "${params_arr[$i]}" ]; then
+            # Add -- before the parameter name
+            param_string+=" --${header_arr[$i]} ${params_arr[$i]}"
+        fi
+    done
+    
+    echo "$param_string"
+}
+
+# Extract parameters for this task
+PARAMS=$(extract_params "$CSV_FILE" "$TASK_ID")
+
+# Print the parameters being used
+echo "Task ID: $TASK_ID"
+echo "Parameters: $PARAMS"
+
+# Create unique output directory for this run
+OUTPUT_DIR="results/run_${SLURM_ARRAY_JOB_ID}_${TASK_ID}"
+mkdir -p "$OUTPUT_DIR"
+
+
+export CMD="python ./torch_vision_cifar10.py \
+  --data_path $DATA_PATH \
+  --metrics_csv  $OUTPUT_DIR/results.csv \
+  --sample_ratio 1.0 \
+  --num_epochs 10 \
+  --log_file $OUTPUT_DIR/training_log.txt \
+  --use_checkpoint --checkpoint_path $OUTPUT_DIR/checkpoint.pth \
+  --save_best_model --best_model_path $OUTPUT_DIR/best_model.pth \
+  --use_snapshot --snapshot_path  $OUTPUT_DIR/snapshot.pth \
+  --use_wandb --wandb_mode offline --wandb_project "array_exp" 
+
+"
+
+# Start time
+start_time=$(date +%s)
+
+echo $CMD 
+srun -l $CMD
+
+#End time
+end_time=$(date +%s)
+
+# Calculate the elapsed time
+elapsed_time=$((end_time - start_time))
+
+# Convert elapsed time to Hours:Minutes:Seconds format
+hours=$((elapsed_time / 3600))
+minutes=$(((elapsed_time % 3600) / 60))
+seconds=$((elapsed_time % 60))
+
+
+# Save job details to the output directory
+echo "Job completed at $(date)" > "${OUTPUT_DIR}/job_info.txt"
+echo "Parameters: $PARAMS" >> "${OUTPUT_DIR}/job_info.txt"
+echo "Slurm Job ID: ${SLURM_JOB_ID}" >> "${OUTPUT_DIR}/job_info.txt"
+
+# Print the execution time
+printf "Execution time : %02d:%02d:%02d\n" "$hours" "$minutes" "$seconds"  >> ${OUTPUT_DIR}/job_info.txt
+
+

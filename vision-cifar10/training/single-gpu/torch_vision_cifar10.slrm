@@ -33,7 +33,6 @@ export CMD="python torch_vision_cifar10.py \
   --model_name resnet50 \
   --mixed_precision auto \
   --pin_memory True \
-  --use_tensorboard  \
   --use_checkpoint --checkpoint_path checkpoint.pth \
   --use_snapshot --snapshot_path snapshot.pth \
   --save_best_model --best_model_path best_model.pth \
