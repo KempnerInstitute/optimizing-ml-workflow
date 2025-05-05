@@ -1,0 +1,28 @@
+#! /bin/bash
+#SBATCH --job-name=img
+#SBATCH --partition=<partition-name>
+#SBATCH --account=<account-name>
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=256G
+#SBATCH --time=01:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+
+
+export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
+
+module load cuda
+module load cudnn
+module load python
+conda activate $CONDA_ENV
+
+python infer_cifar10.py --image ./YellowLabradorLooking_new.jpg --model resnet50 --checkpoint /n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/saved_models/resnet50_cifar10_epoch20_best_model.pth
+
+echo "Job Completed"
+
+
+echo "Job Completed"
+

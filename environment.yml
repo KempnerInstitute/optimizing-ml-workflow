@@ -17,5 +17,8 @@ dependencies:
       - pynvml
       - nvidia-ml-py
       - tensorboard
+      - onnx
+      - onnxscript
+      - onnxruntime
       - nvidia-dali-cuda120 --extra-index-url https://pypi.nvidia.com
 

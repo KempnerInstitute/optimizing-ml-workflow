@@ -99,6 +99,82 @@ def log_gpu_utilization(csv_writer, wandb_enabled, global_step, rank):
         csv_writer.writerow([global_step, "GPU Utilization", gpu_utilization])
         csv_writer.writerow([global_step, "GPU Memory (GB)", gpu_memory])
 
+
+def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, accuracy, args, rank):
+    """Save model checkpoint."""
+    if rank != 0:  # Only save on main process
+        return
+    
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.module.state_dict(),  # For DDP models, use .module to get the underlying model
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'val_accuracy': accuracy
+    }
+    
+    if scheduler:
+        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+    
+    torch.save(checkpoint, args.best_checkpoint_path)
+    logging.info(f"Saved best model checkpoint to {args.best_checkpoint_path} with validation loss: {val_loss:.4f} and accuracy: {accuracy:.2f}%")
+
+    if args.use_wandb and rank == 0:
+        wandb.log({"Best Validation Loss": val_loss, "Best Validation Accuracy": accuracy})
+
+
+def export_to_onnx(model, args, input_shape=(1, 3, 224, 224), rank=0):
+    """Export model to ONNX format."""
+    if rank != 0:  # Only export on main process
+        return
+    
+    if not args.export_onnx:
+        return
+    
+    try:
+        # Create a path for the ONNX file
+        onnx_path = args.onnx_path if args.onnx_path else os.path.splitext(args.best_checkpoint_path)[0] + '.onnx'
+        
+        # Load the best checkpoint if available
+        if os.path.exists(args.best_checkpoint_path):
+            checkpoint = torch.load(args.best_checkpoint_path, map_location='cpu')
+            unwrapped_model = model.module  # Get the base model from DDP wrapper
+            unwrapped_model.load_state_dict(checkpoint['model_state_dict'])
+            logging.info(f"Loaded best model from {args.best_checkpoint_path} for ONNX export")
+            print(f"Loaded best model from {args.best_checkpoint_path} for ONNX export")
+        else:
+            unwrapped_model = model.module  # Get the base model from DDP wrapper
+            logging.warning("Best checkpoint not found. Exporting current model state.")
+        
+        # Set the model to evaluation mode
+        unwrapped_model.eval()
+        unwrapped_model = unwrapped_model.to('cpu')  # Move model to CPU for export
+        
+        # Create dummy input tensor for export
+        dummy_input = torch.randn(input_shape, requires_grad=True)
+        
+        # Export the model
+        torch.onnx.export(
+            unwrapped_model,               # model being run
+            dummy_input,                   # model input (or a tuple for multiple inputs)
+            onnx_path,                     # where to save the model
+            export_params=True,            # store the trained parameter weights inside the model file
+            opset_version=12,              # the ONNX version to export the model to
+            do_constant_folding=True,      # whether to execute constant folding for optimization
+            input_names=['input'],         # the model's input names
+            output_names=['output'],       # the model's output names
+            dynamic_axes={
+                'input': {0: 'batch_size'},    # variable length axes
+                'output': {0: 'batch_size'}
+            }
+        )
+        
+        logging.info(f"Model successfully exported to ONNX format at: {onnx_path}")
+            
+    except Exception as e:
+        logging.error(f"Error exporting model to ONNX: {e}")
+
+
 def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, wandb_enabled, global_step, rank):
     model.train()
     total_loss = 0.0
@@ -125,6 +201,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
             global_step += 1
 
     return total_loss / len(dataloader), global_step
+
 
 def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, epoch, rank):
     model.eval()
@@ -161,6 +238,7 @@ def training_loop(args, model, train_loader, val_loader, train_sampler, criterio
     """Main training loop."""
     early_stopping = EarlyStopping(patience=5)
     best_val_loss = float('inf')
+    best_val_accuracy = 0.0
     start_epoch = 1
     global_step = 0
 
@@ -180,6 +258,14 @@ def training_loop(args, model, train_loader, val_loader, train_sampler, criterio
 
         if rank == 0:
             logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
+        
+        # Save best model checkpoint
+        if args.save_best_checkpoint and avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_val_accuracy = val_accuracy
+            save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, best_val_accuracy, args, rank)
+            if rank == 0:
+                logging.info(f"New best model saved! Validation loss: {best_val_loss:.4f}, Accuracy: {best_val_accuracy:.2f}%")
 
         early_stopping(avg_val_loss)
         if early_stopping.early_stop:
@@ -189,7 +275,6 @@ def training_loop(args, model, train_loader, val_loader, train_sampler, criterio
 
         # Log GPU utilization
         log_gpu_utilization(csv_writer, args.use_wandb, global_step, rank)
-
 
 
 def parse_arguments():
@@ -202,8 +287,10 @@ def parse_arguments():
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--log_file", type=str, default="training_log.txt")
     parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
-    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
-    parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
+    parser.add_argument("--save_best_checkpoint", action="store_true", help="Save best model checkpoint based on validation loss")
+    parser.add_argument("--best_checkpoint_path", type=str, default="best_checkpoint.pth", help="Path to save the best model checkpoint")
+    parser.add_argument("--export_onnx", action="store_true", help="Export the best model to ONNX format after training")
+    parser.add_argument("--onnx_path", type=str, default="", help="Path to save the ONNX model (default: same as checkpoint with .onnx extension)")
     parser.add_argument("--use_snapshot", action="store_true", help="Enable snapshot functionality")
     parser.add_argument("--snapshot_path", type=str, default="snapshot.pth", help="Path to save/load the snapshot")
     parser.add_argument("--model_name", type=str, default="resnet50")
@@ -286,6 +373,11 @@ def main(local_rank, rank, world_size, args):
 
     # Training loop
     training_loop(args, model, train_loader, val_loader, train_sampler, criterion, optimizer, scheduler, scaler, device, csv_writer, use_amp, amp_dtype, rank)
+    
+    # Export model to ONNX format after training if enabled
+    if args.export_onnx:
+        print("exporting to onnx model")
+        export_to_onnx(model, args, input_shape=(1, 3, 224, 224), rank=rank)
 
     if args.use_wandb and rank == 0:
         wandb.finish()
@@ -303,5 +395,6 @@ if __name__ == "__main__":
 
     # Call main with distributed parameters
     main(local_rank, rank, world_size, args)
+
 
 

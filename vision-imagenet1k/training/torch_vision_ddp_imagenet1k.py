@@ -51,42 +51,83 @@ def cleanup_ddp():
     if dist.is_initialized():
         dist.destroy_process_group()
 
-def get_dataloader(batch_size, transform, train_ds="./data/train", val_ds="./data/val", sample_ratio=1.0, num_workers=4, pin_memory=True, distributed=False, rank=0):
-    os.makedirs(train_ds, exist_ok=True)
-    os.makedirs(val_ds, exist_ok=True)
 
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
+def get_dataloader(batch_size, train_transform, val_transform, sample_ratio=1.0, data_path="./data", num_workers=4, pin_memory=True, distributed=False, rank=0):
+    """
+    Load ImageNet-1K dataset and create train and validation data loaders.
+    """
+    os.makedirs(data_path, exist_ok=True)
+    
+    # The paths to training and validation data should be adjusted based on your data directory structure
+    # Typically, ImageNet-1K follows this structure:
+    # /path/to/imagenet/
+    #   train/
+    #     n01440764/
+    #     n01443537/
+    #     ...
+    #   val/
+    #     n01440764/
+    #     n01443537/
+    #     ...
+    
+    train_dir = os.path.join(data_path, 'train')
+    val_dir = os.path.join(data_path, 'val')
 
-    # Load datasets from directories
-    train_dataset = torchvision.datasets.ImageFolder(root=train_ds, transform=transform)
-    val_dataset = torchvision.datasets.ImageFolder(root=val_ds, transform=transform)
+    if not os.path.exists(train_dir) or not os.path.exists(val_dir):
+        raise ValueError(f"ImageNet data not found at {data_path}. Expected 'train' and 'val' directories.")
 
-    # Apply sample_ratio to train and validation datasets
+    # Create datasets
+    train_dataset = torchvision.datasets.ImageFolder(train_dir, transform=train_transform)
+    val_dataset = torchvision.datasets.ImageFolder(val_dir, transform=val_transform)
+    
+    # Apply sample ratio if needed (for testing with smaller dataset)
     if sample_ratio < 1.0:
-        train_size = int(len(train_dataset) * sample_ratio)
-        val_size = int(len(val_dataset) * sample_ratio)
-        train_dataset = Subset(train_dataset, range(train_size))
-        val_dataset = Subset(val_dataset, range(val_size))
-
+        train_samples = int(len(train_dataset) * sample_ratio)
+        train_dataset = Subset(train_dataset, range(train_samples))
+        
+        val_samples = int(len(val_dataset) * sample_ratio)
+        val_dataset = Subset(val_dataset, range(val_samples))
+    
+    # Create samplers for distributed training
     if distributed:
         train_sampler = DistributedSampler(train_dataset, rank=rank)
         val_sampler = DistributedSampler(val_dataset, shuffle=False, rank=rank)
     else:
         train_sampler = None
         val_sampler = None
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=(train_sampler is None), sampler=train_sampler, num_workers=num_workers, pin_memory=pin_memory)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, sampler=val_sampler, num_workers=num_workers, pin_memory=pin_memory)
-
+    
+    # Create data loaders
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        drop_last=True  # Helps with BatchNorm when using small batches
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False,
+        sampler=val_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
+    
+    if rank == 0:
+        logging.info(f"Train dataset size: {len(train_dataset)}")
+        logging.info(f"Validation dataset size: {len(val_dataset)}")
+    
     return train_loader, val_loader, train_sampler
 
 
-
 def build_model(model_name='resnet50', num_classes=1000, finetune=True):
+    """
+    Build a model with the specified architecture.
+    For ImageNet-1K, set num_classes=1000 by default.
+    """
     model = getattr(torchvision.models, model_name)(pretrained=True)
     if finetune:
         for param in model.parameters():
@@ -107,6 +148,82 @@ def log_gpu_utilization(csv_writer, wandb_enabled, global_step, rank):
     if csv_writer:
         csv_writer.writerow([global_step, "GPU Utilization", gpu_utilization])
         csv_writer.writerow([global_step, "GPU Memory (GB)", gpu_memory])
+
+
+def save_checkpoint(model, optimizer, scheduler, epoch, val_loss, accuracy, args, rank):
+    """Save model checkpoint."""
+    if rank != 0:  # Only save on main process
+        return
+    
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.module.state_dict(),  # For DDP models, use .module to get the underlying model
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'val_accuracy': accuracy
+    }
+    
+    if scheduler:
+        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
+    
+    torch.save(checkpoint, args.best_checkpoint_path)
+    logging.info(f"Saved best model checkpoint to {args.best_checkpoint_path} with validation loss: {val_loss:.4f} and accuracy: {accuracy:.2f}%")
+
+    if args.use_wandb and rank == 0:
+        wandb.log({"Best Validation Loss": val_loss, "Best Validation Accuracy": accuracy})
+
+
+def export_to_onnx(model, args, input_shape=(1, 3, 224, 224), rank=0):
+    """Export model to ONNX format."""
+    if rank != 0:  # Only export on main process
+        return
+    
+    if not args.export_onnx:
+        return
+    
+    try:
+        # Create a path for the ONNX file
+        onnx_path = args.onnx_path if args.onnx_path else os.path.splitext(args.best_checkpoint_path)[0] + '.onnx'
+        
+        # Load the best checkpoint if available
+        if os.path.exists(args.best_checkpoint_path):
+            checkpoint = torch.load(args.best_checkpoint_path, map_location='cpu')
+            unwrapped_model = model.module  # Get the base model from DDP wrapper
+            unwrapped_model.load_state_dict(checkpoint['model_state_dict'])
+            logging.info(f"Loaded best model from {args.best_checkpoint_path} for ONNX export")
+            print(f"Loaded best model from {args.best_checkpoint_path} for ONNX export")
+        else:
+            unwrapped_model = model.module  # Get the base model from DDP wrapper
+            logging.warning("Best checkpoint not found. Exporting current model state.")
+        
+        # Set the model to evaluation mode
+        unwrapped_model.eval()
+        unwrapped_model = unwrapped_model.to('cpu')  # Move model to CPU for export
+        
+        # Create dummy input tensor for export
+        dummy_input = torch.randn(input_shape, requires_grad=True)
+        
+        # Export the model
+        torch.onnx.export(
+            unwrapped_model,               # model being run
+            dummy_input,                   # model input (or a tuple for multiple inputs)
+            onnx_path,                     # where to save the model
+            export_params=True,            # store the trained parameter weights inside the model file
+            opset_version=12,              # the ONNX version to export the model to
+            do_constant_folding=True,      # whether to execute constant folding for optimization
+            input_names=['input'],         # the model's input names
+            output_names=['output'],       # the model's output names
+            dynamic_axes={
+                'input': {0: 'batch_size'},    # variable length axes
+                'output': {0: 'batch_size'}
+            }
+        )
+        
+        logging.info(f"Model successfully exported to ONNX format at: {onnx_path}")
+            
+    except Exception as e:
+        logging.error(f"Error exporting model to ONNX: {e}")
+
 
 def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epoch, use_amp, amp_dtype, csv_writer, wandb_enabled, global_step, rank):
     model.train()
@@ -135,11 +252,17 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
 
     return total_loss / len(dataloader), global_step
 
+
 def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, epoch, rank):
     model.eval()
     total_loss = 0.0
     correct = 0
     total = 0
+    
+    # For top-1 and top-5 accuracy
+    top1_correct = 0
+    top5_correct = 0
+    
     with torch.no_grad():
         loop = tqdm(dataloader, desc="Validation", disable=(rank != 0))
         for images, labels in loop:
@@ -147,29 +270,42 @@ def validate(model, dataloader, criterion, device, csv_writer, wandb_enabled, ep
             outputs = model(images)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
-            _, predicted = outputs.max(1)
-            correct += predicted.eq(labels).sum().item()
+            
+            # Calculate top-1 and top-5 accuracy
+            _, pred = outputs.topk(5, 1, True, True)
+            pred = pred.t()
+            correct = pred.eq(labels.view(1, -1).expand_as(pred))
+            
+            top1_correct += correct[:1].reshape(-1).float().sum(0, keepdim=True).item()
+            top5_correct += correct[:5].reshape(-1).float().sum(0, keepdim=True).item()
             total += labels.size(0)
 
     avg_loss = total_loss / len(dataloader)
-    accuracy = 100.0 * correct / total
+    top1_accuracy = 100.0 * top1_correct / total
+    top5_accuracy = 100.0 * top5_correct / total
 
     # Log to WandB
     if wandb_enabled and rank == 0:
-        wandb.log({"Validation Loss": avg_loss, "Validation Accuracy": accuracy})
+        wandb.log({
+            "Validation Loss": avg_loss, 
+            "Top-1 Accuracy": top1_accuracy,
+            "Top-5 Accuracy": top5_accuracy
+        })
 
     # Log to CSV
     if csv_writer:
         csv_writer.writerow([epoch, "Validation Loss", avg_loss])
-        csv_writer.writerow([epoch, "Validation Accuracy", accuracy])
+        csv_writer.writerow([epoch, "Top-1 Accuracy", top1_accuracy])
+        csv_writer.writerow([epoch, "Top-5 Accuracy", top5_accuracy])
 
-    return avg_loss, accuracy
+    return avg_loss, top1_accuracy
 
 
 def training_loop(args, model, train_loader, val_loader, train_sampler, criterion, optimizer, scheduler, scaler, device, csv_writer, use_amp, amp_dtype, rank):
     """Main training loop."""
     early_stopping = EarlyStopping(patience=5)
     best_val_loss = float('inf')
+    best_val_accuracy = 0.0
     start_epoch = 1
     global_step = 0
 
@@ -188,7 +324,15 @@ def training_loop(args, model, train_loader, val_loader, train_sampler, criterio
             scheduler.step()
 
         if rank == 0:
-            logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
+            logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Top-1 Accuracy = {val_accuracy:.2f}%")
+        
+        # Save best model checkpoint
+        if args.save_best_checkpoint and avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_val_accuracy = val_accuracy
+            save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, best_val_accuracy, args, rank)
+            if rank == 0:
+                logging.info(f"New best model saved! Validation loss: {best_val_loss:.4f}, Top-1 Accuracy: {best_val_accuracy:.2f}%")
 
         early_stopping(avg_val_loss)
         if early_stopping.early_stop:
@@ -200,26 +344,26 @@ def training_loop(args, model, train_loader, val_loader, train_sampler, criterio
         log_gpu_utilization(csv_writer, args.use_wandb, global_step, rank)
 
 
-
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train_ds", type=str, required=True, help="Path to the training dataset directory")
-    parser.add_argument("--val_ds", type=str, required=True, help="Path to the validation dataset directory")
+    parser.add_argument("--data_path", type=str, default="./data/imagenet")
     parser.add_argument("--sample_ratio", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_epochs", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=0.001)
     parser.add_argument("--log_file", type=str, default="training_log.txt")
     parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
-    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
-    parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
+    parser.add_argument("--save_best_checkpoint", action="store_true", help="Save best model checkpoint based on validation loss")
+    parser.add_argument("--best_checkpoint_path", type=str, default="best_checkpoint.pth", help="Path to save the best model checkpoint")
+    parser.add_argument("--export_onnx", action="store_true", help="Export the best model to ONNX format after training")
+    parser.add_argument("--onnx_path", type=str, default="", help="Path to save the ONNX model (default: same as checkpoint with .onnx extension)")
     parser.add_argument("--use_snapshot", action="store_true", help="Enable snapshot functionality")
     parser.add_argument("--snapshot_path", type=str, default="snapshot.pth", help="Path to save/load the snapshot")
     parser.add_argument("--model_name", type=str, default="resnet50")
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--finetune", action="store_true")
-    parser.add_argument("--num_classes", type=int, default=1000)
+    parser.add_argument("--num_classes", type=int, default=1000)  # Changed to 1000 for ImageNet
     parser.add_argument("--scheduler", type=str, default="step", choices=["step", "cosine", "none"])
     parser.add_argument("--mixed_precision", type=str, default="none", choices=["none", "fp16", "bf16", "auto"])
     parser.add_argument("--metrics_csv", type=str, default="metrics.csv")
@@ -253,20 +397,28 @@ def main(local_rank, rank, world_size, args):
     amp_dtype = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
-    # Data preparation
-    transform = transforms.Compose([
+    # Data preparation - with ImageNet-specific transformations
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(32, padding=4),
-        transforms.Resize((224, 224)),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
     train_loader, val_loader, train_sampler = get_dataloader(
-        args.batch_size, transform, 
-        sample_ratio=args.sample_ratio,
-        train_ds=args.train_ds, 
-        val_ds=args.val_ds,  
+        args.batch_size, 
+        train_transform, 
+        val_transform,
+        sample_ratio=args.sample_ratio, 
+        data_path=args.data_path, 
         num_workers=args.num_workers, 
         distributed=True, 
         rank=rank
@@ -303,6 +455,11 @@ def main(local_rank, rank, world_size, args):
 
     # Training loop
     training_loop(args, model, train_loader, val_loader, train_sampler, criterion, optimizer, scheduler, scaler, device, csv_writer, use_amp, amp_dtype, rank)
+    
+    # Export model to ONNX format after training if enabled
+    if args.export_onnx:
+        print("exporting to onnx model")
+        export_to_onnx(model, args, input_shape=(1, 3, 224, 224), rank=rank)
 
     if args.use_wandb and rank == 0:
         wandb.finish()

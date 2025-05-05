@@ -12,6 +12,7 @@
 #SBATCH --error=img-%N.%x.%j.err
 #SBATCH --constraint=a100|h100
 
+
 export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
 source ~/.ssh/wandb_key.sh
@@ -67,11 +68,13 @@ export CMD="torchrun \
   --mixed_precision auto \
   --pin_memory True \
   --tensorboard_csv ./tensorboard.csv \
-  --use_checkpoint --checkpoint_path best_model.pth \
-  --use_snapshot --snapshot_path snapshot.pth \
+  --save_best_checkpoint --best_checkpoint_path best_model.pth \
+  --export_onnx --onnx_path final_model.onnx \
   --use_wandb --wandb_mode online --wandb_project "optimize-ml-workflow"
 
  "
+
+
 
 # Start time
 start_time=$(date +%s)

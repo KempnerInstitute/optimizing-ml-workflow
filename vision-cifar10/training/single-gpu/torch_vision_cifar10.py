@@ -72,6 +72,52 @@ def save_checkpoint(model, optimizer, epoch, path="checkpoint.pth", amp_mode="no
     print(f"Checkpoint saved to {path}")
 
 
+def save_best_model(model, optimizer, epoch, val_loss, val_accuracy, path="best_model.pth", amp_mode="none"):
+    """Save the best model based on validation loss."""
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_loss': val_loss,
+        'val_accuracy': val_accuracy,
+        'amp_mode': amp_mode,
+    }
+    torch.save(checkpoint, path)
+    print(f"Best model saved to {path} with validation loss: {val_loss:.4f}, accuracy: {val_accuracy:.2f}%")
+
+
+def export_to_onnx(model, input_shape, path="model.onnx"):
+    """Export model to ONNX format."""
+    try:
+        # Create dummy input tensor
+        dummy_input = torch.randn(input_shape, requires_grad=True)
+        
+        # Move model to CPU for export
+        model = model.cpu()
+        model.eval()
+        
+        # Export model
+        torch.onnx.export(
+            model,                   # model being run
+            dummy_input,             # model input (or a tuple for multiple inputs)
+            path,                    # where to save the model
+            export_params=True,      # store the trained parameter weights inside the model file
+            opset_version=12,        # the ONNX version to export the model to
+            do_constant_folding=True, # whether to execute constant folding for optimization
+            input_names=['input'],   # the model's input names
+            output_names=['output'], # the model's output names
+            dynamic_axes={
+                'input': {0: 'batch_size'},    # variable length axes
+                'output': {0: 'batch_size'}
+            }
+        )
+        print(f"Model successfully exported to ONNX format: {path}")
+        return True
+    except Exception as e:
+        print(f"Error exporting model to ONNX: {e}")
+        return False
+
+
 def load_checkpoint(model, optimizer, path="checkpoint.pth"):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Checkpoint file not found: {path}")
@@ -83,6 +129,19 @@ def load_checkpoint(model, optimizer, path="checkpoint.pth"):
     amp_mode = checkpoint.get('amp_mode', 'none')
     print(f"Checkpoint loaded from {path}, resuming from epoch {epoch}")
     return epoch, amp_mode
+
+
+def load_best_model(model, path="best_model.pth"):
+    """Load the best model for ONNX export."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Best model file not found: {path}")
+
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    print(f"Best model loaded from {path}, epoch: {checkpoint['epoch']}, "
+          f"val_loss: {checkpoint.get('val_loss', 'unknown')}, "
+          f"val_accuracy: {checkpoint.get('val_accuracy', 'unknown')}%")
+    return model
 
 
 def save_snapshot(model, optimizer, scheduler, scaler, epoch, best_val_loss, snapshot_path="snapshot.pth"):
@@ -121,7 +180,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, scaler, device, epo
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
     for batch_idx, (images, labels) in enumerate(loop):
-        images, labels = images.to(device), labels.to(device)
+        images, labels = images.to(device, non_blocking=True), labels.to(device)
         with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -146,7 +205,7 @@ def validate(model, dataloader, criterion, device, tensorboard_logdir=None, wand
     with torch.no_grad():
         loop = tqdm(dataloader, desc="Validation")
         for images, labels in loop:
-            images, labels = images.to(device), labels.to(device)
+            images, labels = images.to(device, non_blocking=True), labels.to(device)
             outputs = model(images)
             loss = criterion(outputs, labels)
             total_loss += loss.item()
@@ -178,6 +237,10 @@ def arg_parser():
     parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
     parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
+    parser.add_argument("--save_best_model", action="store_true", help="Save best model based on validation loss")
+    parser.add_argument("--best_model_path", type=str, default="best_model.pth", help="Path to save the best model")
+    parser.add_argument("--export_onnx", action="store_true", help="Export best model to ONNX format after training")
+    parser.add_argument("--onnx_path", type=str, default="best_model.onnx", help="Path to save the ONNX model")
     parser.add_argument("--use_snapshot", action="store_true", help="Enable snapshot functionality")
     parser.add_argument("--snapshot_path", type=str, default="snapshot.pth", help="Path to save/load the snapshot")
     parser.add_argument("--model_name", type=str, default="resnet50")
@@ -240,6 +303,8 @@ def main():
 
     # Initialize variables for early stopping
     best_val_loss = float('inf')
+    best_val_accuracy = 0.0
+    best_epoch = 0
     patience_counter = 0
     patience = 5  # Number of epochs to wait before stopping
     delta = 0  # Minimum improvement threshold
@@ -262,8 +327,6 @@ def main():
     # Initialize TensorBoard log directory
     if args.use_tensorboard:
         os.makedirs(args.tensorboard_logdir, exist_ok=True)
-
-
 
     with open(args.metrics_csv, mode='w', newline='') as csv_file:
         csv_writer = csv.writer(csv_file)
@@ -289,6 +352,14 @@ def main():
             if args.use_checkpoint:
                 save_checkpoint(model, optimizer, epoch, path=args.checkpoint_path, amp_mode=args.mixed_precision)
 
+            # Save best model if enabled and if it's the best so far
+            if args.save_best_model and avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_val_accuracy = val_accuracy
+                best_epoch = epoch
+                save_best_model(model, optimizer, epoch, best_val_loss, best_val_accuracy, 
+                               path=args.best_model_path, amp_mode=args.mixed_precision)
+
             # Save snapshot if enabled
             if args.use_snapshot:
                 save_snapshot(model, optimizer, scheduler, scaler, epoch, best_val_loss, args.snapshot_path)
@@ -302,6 +373,28 @@ def main():
                 logging.info("Early stopping triggered.")
                 break
 
+    # Export best model to ONNX format if enabled
+    if args.export_onnx and args.save_best_model and os.path.exists(args.best_model_path):
+        logging.info(f"Exporting best model from epoch {best_epoch} to ONNX format...")
+        
+        # Create a fresh model instance
+        onnx_model = build_model(args.model_name, args.num_classes, finetune=args.finetune)
+        
+        # Load the best model weights
+        try:
+            onnx_model = load_best_model(onnx_model, path=args.best_model_path)
+            
+            # Export to ONNX format
+            input_shape = (1, 3, 224, 224)  # Batch size, channels, height, width
+            export_success = export_to_onnx(onnx_model, input_shape, path=args.onnx_path)
+            
+            if export_success:
+                logging.info(f"Successfully exported model to ONNX format: {args.onnx_path}")
+            else:
+                logging.error("Failed to export model to ONNX format.")
+        except Exception as e:
+            logging.error(f"Error exporting model to ONNX: {e}")
+    
     if args.use_wandb:
         wandb.finish()
 

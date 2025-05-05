@@ -13,6 +13,7 @@
 #SBATCH --output=img-%N.%x.%j.out
 #SBATCH --error=img-%N.%x.%j.err
 
+
 export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
 source ~/.ssh/wandb_key.sh
@@ -33,8 +34,10 @@ export CMD="python torch_vision_cifar10.py \
   --mixed_precision auto \
   --pin_memory True \
   --use_tensorboard  \
-  --use_checkpoint --checkpoint_path best_model.pth \
+  --use_checkpoint --checkpoint_path checkpoint.pth \
   --use_snapshot --snapshot_path snapshot.pth \
+  --save_best_model --best_model_path best_model.pth \
+  --export_onnx --onnx_path final_model.onnx \
   --use_wandb --wandb_mode online --wandb_project "optimize-ml-workflow"
 
  "
