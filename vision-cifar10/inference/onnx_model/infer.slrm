@@ -20,7 +20,7 @@ module load cudnn
 module load python
 conda activate $CONDA_ENV
 
-python onnx_inference.py --model /n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/saved_models/resnet50_cifar10_epoch20_best_model.onnx --image ./YellowLabradorLooking_new.jpg --labels labels.txt --thread 4 
+python onnx_inference.py --model /n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/saved_models/resnet50_cifar10_epoch20_best_model.onnx --image ../data/YellowLabradorLooking_new.jpg --labels labels.txt --thread 4 
 
 echo "Job Completed"
 

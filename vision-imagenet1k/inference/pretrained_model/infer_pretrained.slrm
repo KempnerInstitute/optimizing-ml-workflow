@@ -20,7 +20,7 @@ module load cudnn
 module load python
 conda activate $CONDA_ENV
 
-python infer_pretrained.py --model resnet50 --image ./YellowLabradorLooking_new.jpg 
+python infer_pretrained.py --model resnet50 --image ../data/YellowLabradorLooking_new.jpg 
 
 echo "Job Completed"
 
