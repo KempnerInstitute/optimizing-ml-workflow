@@ -6,7 +6,7 @@ scheduler: "step" # "step", "cosine", "none"
 log_file: "training_log.txt"
 
 # WandB settings
-use_wandb: true # Enable Weights & Biases logging
+use_wandb: false # Enable Weights & Biases logging
 wandb_mode: "online" # WandB mode: online or offline
 wandb_project: "ml-workflows-workshop" # WandB project name
 
