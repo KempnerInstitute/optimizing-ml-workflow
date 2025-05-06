@@ -20,5 +20,6 @@ dependencies:
       - onnx
       - onnxscript
       - onnxruntime
+      - yaml
       - nvidia-dali-cuda120 --extra-index-url https://pypi.nvidia.com
 
