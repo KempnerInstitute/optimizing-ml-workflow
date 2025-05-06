@@ -38,7 +38,7 @@ module load cudnn/9.5.1.17_cuda12-fasrc01
 ```
 Use `mamba` or `conda` to create the environment to install the required packages such as pytorch, torch-vision, wandb, etc.,
 ```bash
-mamba env create --prefix=<absolute-path-for-conda-env" -f environment.yml
+mamba env create --prefix="<absolute-path-for-conda-env" -f environment.yml
 
 ```
 ---
