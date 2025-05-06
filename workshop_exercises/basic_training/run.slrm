@@ -13,8 +13,6 @@
 #SBATCH --output=img-%N.%x.%j.out
 #SBATCH --error=img-%N.%x.%j.err
 
-
-export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
 source ~/.ssh/wandb_key.sh
 
