@@ -1,0 +1,22 @@
+# Training hyperparameters
+batch_size: 128
+num_epochs: 20
+learning_rate: 0.0005
+scheduler: "step" # "step", "cosine", "none"
+log_file: "training_log.txt"
+
+# WandB settings
+use_wandb: true # Enable Weights & Biases logging
+wandb_mode: "online" # WandB mode: online or offline
+wandb_project: "ml-workflows-workshop" # WandB project name
+
+# Data settings
+data_path: "/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
+sample_ratio: 1.0
+num_workers: 4
+num_classes: 10
+pin_memory: true # Whether to use pinned memory for DataLoader
+
+# Model settings
+model_name: "resnet50"
+finetune: false
