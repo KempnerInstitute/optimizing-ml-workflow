@@ -90,10 +90,6 @@ def validate(model, dataloader, criterion, device, wandb_enabled=False, epoch=0)
 
 def main():
     
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
-    # args = parser.parse_args()
-    # TODO: get this working with argparse config input even with sweep
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 

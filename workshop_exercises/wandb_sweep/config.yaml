@@ -1,6 +1,6 @@
 # Training hyperparameters
 batch_size: 128
-num_epochs: 3
+num_epochs: 10
 learning_rate: 0.0005
 scheduler: "step" # "step", "cosine", "none"
 log_file: "training_log.txt"
