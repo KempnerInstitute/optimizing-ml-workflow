@@ -2,7 +2,6 @@
 #SBATCH --job-name=chkpt
 #SBATCH --partition=<partition-name>
 #SBATCH --account=<account-name>
-#SBATCH --constraint=a100|h100
 #SBATCH --requeue 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -14,9 +13,7 @@
 #SBATCH --error=img-%N.%x.%j.err
 #SBATCH --array=1-12%4
 
-export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
-source ~/.ssh/wandb_key.sh
 
 module load cuda
 module load cudnn
