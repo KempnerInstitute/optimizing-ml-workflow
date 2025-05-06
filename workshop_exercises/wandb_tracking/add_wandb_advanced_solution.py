@@ -100,7 +100,7 @@ def validate(model, dataloader, criterion, device, wandb_enabled=False, epoch=0)
 
         # Log last batch of images, predictions, labels, and scores
         table = wandb.Table(
-            columns=["id", "image", "pred", "target"] + [f"score_{class_name}" for class_name in range(class_names)]
+            columns=["id", "image", "pred", "target"] + [f"score_{class_name}" for class_name in class_names]
         )
         id = 0
         for img, pred, targ, prob in zip(
