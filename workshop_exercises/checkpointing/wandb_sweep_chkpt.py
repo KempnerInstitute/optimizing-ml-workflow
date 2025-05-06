@@ -1,7 +1,8 @@
 import os
-import argparse
-import logging  
 import random
+import argparse
+import logging
+import yaml
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -41,7 +42,7 @@ def build_model(model_name='resnet50', num_classes=10, finetune=True):
     return model
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer,  device, epoch, wandb_enabled=False):
+def train_one_epoch(model, dataloader, criterion, optimizer, device, epoch, wandb_enabled=False):
     model.train()
     total_loss = 0.0
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
@@ -54,10 +55,9 @@ def train_one_epoch(model, dataloader, criterion, optimizer,  device, epoch, wan
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-
+        
     avg_loss = total_loss / len(dataloader)
     
-    # Log to wandb
     if wandb_enabled:
         wandb.log({"Train Loss": avg_loss}, step=epoch)
 
@@ -83,7 +83,6 @@ def validate(model, dataloader, criterion, device, wandb_enabled=False, epoch=0)
     avg_loss = total_loss / len(dataloader)
     accuracy = 100.0 * correct / total
 
-    # Log to wandb
     if wandb_enabled:
         wandb.log({"Validation Loss": avg_loss, "Validation Accuracy": accuracy}, step=epoch)
 
@@ -116,40 +115,31 @@ def load_checkpoint(model, optimizer, scheduler, path="checkpoint.pth"):
     return epoch
 
 
-def arg_parser():
-    """
-    Creates and returns the argument parser for the program.
-    """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default="./data")
-    parser.add_argument("--sample_ratio", type=float, default=1.0)
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--num_epochs", type=int, default=20)
-    parser.add_argument("--learning_rate", type=float, default=0.001)
-    parser.add_argument("--log_file", type=str, default="training_log.txt")
-    parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint or snapshot")
-    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
-    parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pth", help="Path to save/load the checkpoint")
-    parser.add_argument("--use_checkpoint", action="store_true", help="Enable checkpoint saving/loading")
-    parser.add_argument("--checkpoint_every", type=int, default=3, help="Save a checkpoint every N epochs")
-    parser.add_argument("--model_name", type=str, default="resnet50")
-    parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--finetune", action="store_true")
-    parser.add_argument("--num_classes", type=int, default=10)
-    parser.add_argument("--scheduler", type=str, default="step", choices=["step", "cosine", "none"])
-    parser.add_argument("--mixed_precision", type=str, default="none", choices=["none", "fp16", "bf16", "auto"])
-    parser.add_argument("--pin_memory", type=bool, default=True, help="Whether to use pinned memory for DataLoader")
-    parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging")
-    parser.add_argument("--wandb_mode", type=str, default="online", choices=["online", "offline"], help="WandB mode: online or offline")
-    parser.add_argument("--wandb_project", type=str, default="training-monitoring", help="WandB project name")
-    return parser
-
-
 def main():
-    parser = arg_parser()
-    args = parser.parse_args()
 
-    logging.basicConfig(filename=args.log_file, level=logging.INFO, format="%(asctime)s - %(message)s")
+    # Load configuration 
+    with open("config.yaml", "r") as f:
+        config = yaml.safe_load(f)    
+
+    # Initialize wandb
+    if config['use_wandb']:
+        os.environ["WANDB_MODE"] = config['wandb_mode']
+        wandb.init(project=config['wandb_project'], config=config)
+        config = wandb.config
+
+        # Set checkpoint directory inside WandB run folder
+        checkpoint_dir = os.path.join(wandb.run.dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        # Set unique checkpoint path per run        
+        checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{wandb.run.id}.pth")
+
+        # Store in wandb.config   
+        wandb.config.update({"checkpoint_path": checkpoint_path}, allow_val_change=True)
+    else:
+        checkpoint_path = config['checkpoint_path'] 
+
+    logging.basicConfig(filename=config['log_file'], level=logging.INFO, format="%(asctime)s - %(message)s")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transform = transforms.Compose([
@@ -161,18 +151,20 @@ def main():
     ])
 
     train_loader, val_loader = get_dataloader(
-        args.batch_size, transform,
-        sample_ratio=args.sample_ratio, data_path=args.data_path, num_workers=args.num_workers
+        config['batch_size'], transform,
+        sample_ratio=config['sample_ratio'], 
+        data_path=config['data_path'], 
+        num_workers=config['num_workers']
     )
 
-    model = build_model(args.model_name, args.num_classes, finetune=args.finetune).to(device)
+    model = build_model(config['model_name'], config['num_classes'], finetune=config['finetune']).to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=config['learning_rate'])
 
-    if args.scheduler == "step":
+    if config['scheduler'] == "step":
         scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
-    elif args.scheduler == "cosine":
-        scheduler = CosineAnnealingLR(optimizer, T_max=args.num_epochs)
+    elif config['scheduler'] == "cosine":
+        scheduler = CosineAnnealingLR(optimizer, T_max=config['num_epochs'])
     else:
         scheduler = None
 
@@ -180,41 +172,49 @@ def main():
     simulated_crash_epoch = random.randint(3, 8)
 
     # Resume from checkpoint if specified and enabled
-    if args.use_checkpoint and args.resume and os.path.exists(args.checkpoint_path):
-        start_epoch, _ = load_checkpoint(model, optimizer, scheduler, path=args.checkpoint_path)
+    if config['use_checkpoint'] and config['resume'] and os.path.exists(checkpoint_path):
+        start_epoch = load_checkpoint(model, optimizer, scheduler, path=checkpoint_path)
 
-    # Initialize wandb
-    if args.use_wandb:
-        os.environ["WANDB_MODE"] = args.wandb_mode
-        wandb.init(project=args.wandb_project, config=vars(args))
 
-    for epoch in range(start_epoch, args.num_epochs + 1):
+    for epoch in range(start_epoch, config['num_epochs'] + 1):
         avg_train_loss = train_one_epoch(
-            model, train_loader, criterion, optimizer, device, epoch, wandb_enabled=args.use_wandb
+            model, train_loader, criterion, optimizer, device, epoch, wandb_enabled=config['use_wandb']
         )
         avg_val_loss, val_accuracy = validate(
-            model, val_loader, criterion, device, wandb_enabled=args.use_wandb, epoch=epoch
+            model, val_loader, criterion, device, wandb_enabled=config['use_wandb'], epoch=epoch
         )
 
         if scheduler:
             scheduler.step()
 
         logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
-
+    
         # Save checkpoint if enabled
-        if args.use_checkpoint and (epoch % args.checkpoint_every == 0):
-            save_checkpoint(model, optimizer, scheduler, epoch, path=args.checkpoint_path)
+        if config['use_checkpoint'] and (epoch % config['checkpoint_every'] == 0):
+            save_checkpoint(model, optimizer, scheduler, epoch, path=checkpoint_path)
+
+            # Optionally upload the checkpoint as a WandB artifact
+            if config.get("upload_checkpoint", False):
+                artifact = wandb.Artifact(name=f"checkpoint-{wandb.run.id}", type="model")
+                artifact.add_file(checkpoint_path)
+                wandb.log_artifact(artifact)
+                print(f"Uploaded checkpoint as artifact: checkpoint-{wandb.run.id}")
 
         # Simulated crash
-        if args.simulate_crash and epoch == simulated_crash_epoch:
+        if config['simulate_crash'] and epoch == simulated_crash_epoch:
             print("Simulating crash at epoch", epoch)
             raise SystemExit("Training interrupted. Resume using --resume.")
 
-    if args.use_wandb:
+    if config['use_wandb']:
+        wandb.log({"status": "finished", "final_epoch": epoch})
         wandb.finish()
 
+    # Clean up checkpoint if training completed
+    # if config['use_checkpoint'] and os.path.exists(checkpoint_path):
+    #     os.remove(checkpoint_path)
+    #     print(f"Deleted checkpoint: {checkpoint_path}")
+   
 
 if __name__ == "__main__":
     main()
-
 

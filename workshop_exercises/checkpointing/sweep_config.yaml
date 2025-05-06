@@ -1,0 +1,18 @@
+program: wandb_sweep_chkpt.py
+method: grid           # or bayes/random for smart search
+
+metric:
+  goal: maximize
+  name: Validation Accuracy
+
+parameters:
+  learning_rate:
+    values: [0.1, 0.01]
+  batch_size:
+    values: [32, 64, 128]
+  finetune:
+    values: [true, false]
+  resume:
+    values: [true]
+  use_checkpoint:
+    values: [true]    
