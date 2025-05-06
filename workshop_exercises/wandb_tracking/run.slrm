@@ -1,0 +1,53 @@
+#! /bin/bash
+#SBATCH --job-name=img
+#SBATCH --partition=<partition-name>
+#SBATCH --account=<account-name>
+#SBATCH --constraint=a100|h100
+#SBATCH --requeue 
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=01:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+
+
+export DATA_PATH="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/data/cifar10"
+export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
+source ~/.ssh/wandb_key.sh
+
+module load cuda
+module load cudnn
+module load python
+conda activate $CONDA_ENV
+
+# Start time
+start_time=$(date +%s)
+
+python add_wandb_exercise.py --config config.yaml
+
+echo "Job Completed"
+
+#End time
+end_time=$(date +%s)
+
+# Calculate the elapsed time
+elapsed_time=$((end_time - start_time))
+
+# Convert elapsed time to Hours:Minutes:Seconds format
+hours=$((elapsed_time / 3600))
+minutes=$(((elapsed_time % 3600) / 60))
+seconds=$((elapsed_time % 60))
+
+# Print the execution time
+printf "Execution time : %02d:%02d:%02d\n" "$hours" "$minutes" "$seconds"
+
+echo "============================="
+seff $SLURM_JOB_ID
+
+echo "============================="
+sacct -j $SLURM_JOB_ID --format=JobID,JobName,Partition,Account,AllocCPUs,State,ExitCode,Elapsed,MaxRSS,MaxVMSize
+echo "============================="
+
