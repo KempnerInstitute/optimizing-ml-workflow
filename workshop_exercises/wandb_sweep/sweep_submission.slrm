@@ -12,7 +12,7 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=img-%N.%x.%j.out
 #SBATCH --error=img-%N.%x.%j.err
-#SBATCH --array=1-12%4
+#SBATCH --array=1-12%2
 
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
 source ~/.ssh/wandb_key.sh
