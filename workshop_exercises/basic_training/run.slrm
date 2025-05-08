@@ -2,7 +2,6 @@
 #SBATCH --job-name=img
 #SBATCH --partition=<partition-name>
 #SBATCH --account=<account-name>
-#SBATCH --requeue 
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
@@ -13,7 +12,6 @@
 #SBATCH --error=img-%N.%x.%j.err
 
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
-source ~/.ssh/wandb_key.sh
 
 module load cuda
 module load cudnn

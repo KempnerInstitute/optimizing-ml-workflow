@@ -14,7 +14,6 @@
 
 
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
-source ~/.ssh/wandb_key.sh
 
 module load cuda
 module load cudnn
