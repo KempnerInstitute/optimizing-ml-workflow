@@ -116,10 +116,16 @@ def load_checkpoint(model, optimizer, scheduler, path="checkpoint.pth"):
 
 
 def main():
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str, default=os.getenv('CONFIG_PATH', 'config.yaml'), help='Path to the config file')
+    args, unknown = parser.parse_known_args()
+    print("Name of config file:", args.config)
+    if unknown:
+        print("Received unknown args (likely from wandb sweep):", unknown)
+        
     # Load configuration 
-    with open("config.yaml", "r") as f:
-        config = yaml.safe_load(f)    
+    with open(args.config, "r") as f:
+        config = yaml.safe_load(f)     
 
     # Initialize wandb
     if config['use_wandb']:
