@@ -43,10 +43,4 @@ seconds=$((elapsed_time % 60))
 # Print the execution time
 printf "Execution time : %02d:%02d:%02d\n" "$hours" "$minutes" "$seconds"
 
-echo "============================="
-seff $SLURM_JOB_ID
-
-echo "============================="
-sacct -j $SLURM_JOB_ID --format=JobID,JobName,Partition,Account,AllocCPUs,State,ExitCode,Elapsed,MaxRSS,MaxVMSize
-echo "============================="
 
