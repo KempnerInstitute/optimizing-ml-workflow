@@ -12,6 +12,7 @@
 #SBATCH --error=img-%N.%x.%j.err
 #SBATCH --array=1-12%4
 
+export CONFIG_PATH=config.yaml
 export CONDA_ENV="/n/netscratch/kempner_dev/Everyone/workshop/ml-opt-workshop/shared_env/pytorch_image"
 
 module load cuda
