@@ -17,7 +17,7 @@ export CONDA_ENV="/n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave"
 
 # ------ REQUIRED: set these here ------
 export ENTITY=<your_entity>       # TODO: Set your W&B entity
-export PROJECT=<your_project>     # TODO: Set your W&B project  
+export PROJECT=<your_project>     # TODO: Set your W&B project
 export SWEEP_ID=<your_sweep_id>   # TODO: Set from `wandb sweep` output
 
 # Optional runtime knobs for the live averaging (defaults baked into code)

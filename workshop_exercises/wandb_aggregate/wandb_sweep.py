@@ -1,6 +1,7 @@
 import os
 import argparse
 import logging
+import time
 import yaml
 import torch
 import torch.nn as nn
@@ -153,6 +154,11 @@ def main():
             scheduler.step()
 
         logging.info(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, Val Loss = {avg_val_loss:.4f}, Val Accuracy = {val_accuracy:.2f}%")
+    
+    # Wait for final averages to be computed and received before finishing
+    if config['use_wandb'] and averager is not None:
+        print(f"Waiting for final averages to be received...", flush=True)
+        time.sleep(5)  # Give aggregator time to compute and publish final averages
     
     if config['use_wandb']:
         wandb.finish()
