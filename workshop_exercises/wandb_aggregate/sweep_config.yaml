@@ -1,0 +1,12 @@
+name: cifar10-bayes-sweep  # Custom sweep name (change as desired)
+program: wandb_sweep.py
+method: bayes          # Bayesian optimization for smart hyperparameter search
+
+metric:
+  goal: maximize
+  name: Validation Accuracy
+
+parameters:
+  learning_rate:
+    min: 0.0001
+    max: 0.1

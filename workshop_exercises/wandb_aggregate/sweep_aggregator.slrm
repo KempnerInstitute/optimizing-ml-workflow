@@ -1,0 +1,53 @@
+#!/bin/bash
+#SBATCH --job-name=sweep-agg
+#SBATCH --partition=shared
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --time=02-00:00:00
+#SBATCH --output=slurm-agg-%N.%x.%j.out
+#SBATCH --error=slurm-agg-%N.%x.%j.err
+#SBATCH --export=ALL
+
+
+# ---- REQUIRED: set SWEEP_ID before sbatch or edit here ----
+# Example: export SWEEP_ID=abcd1234
+: "${SWEEP_ID:?SWEEP_ID must be set. Export it before sbatch or set it here.}"
+
+# ---- Optional: tune averaging behavior ----
+# REDIS connection auto-sourced from redis_connection.env if present
+# NOTE: EXPECTED_RUNS should match the worker array size in sweep_submission.slrm (default: 12)
+export EXPECTED_RUNS=${EXPECTED_RUNS:-12}
+export STEP_TIMEOUT=${STEP_TIMEOUT:-10}
+export QUORUM=${QUORUM:-0}
+export LIVE_AVG_NS=${LIVE_AVG_NS:-loss}  # Use "val" for validation aggregator
+
+set -euo pipefail
+
+module purge || true
+module load python
+
+# Use the same env as workers for consistency
+export CONDA_ENV="/n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave"
+conda activate "$CONDA_ENV"
+
+# If a redis_connection.env file exists, source it only if REDIS_HOST/PORT are not already set
+if [ -z "${REDIS_HOST:-}" ] || [ -z "${REDIS_PORT:-}" ]; then
+	if [ -f "$(pwd)/redis_connection.env" ]; then
+		echo "Sourcing $(pwd)/redis_connection.env"
+		# shellcheck disable=SC1091
+		source "$(pwd)/redis_connection.env"
+	fi
+fi
+
+# Debug: Print configuration
+echo "=== Aggregator Configuration ==="
+echo "SWEEP_ID: $SWEEP_ID"
+echo "LIVE_AVG_NS: $LIVE_AVG_NS"
+echo "EXPECTED_RUNS: $EXPECTED_RUNS"
+echo "REDIS_HOST: $REDIS_HOST"
+echo "REDIS_PORT: $REDIS_PORT"
+echo "================================"
+
+python -u aggregator.py
