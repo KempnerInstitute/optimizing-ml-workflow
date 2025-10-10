@@ -1,0 +1,79 @@
+#!/bin/bash
+#SBATCH --job-name=redis-server
+#SBATCH --partition=shared
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=8G
+#SBATCH --time=03-00:00:00
+#SBATCH --output=redis-%N.%j.out
+#SBATCH --error=redis-%N.%j.err
+
+set -euo pipefail
+
+# Activate conda environment (needed if redis-server was installed via pip/conda)
+module purge || true
+module load python
+export CONDA_ENV="/n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave"
+conda activate "$CONDA_ENV"
+
+# Cache Singularity/Apptainer containers in current directory instead of home
+export SINGULARITY_CACHEDIR="$(pwd)/.singularity_cache"
+export APPTAINER_CACHEDIR="$(pwd)/.apptainer_cache"
+mkdir -p "$SINGULARITY_CACHEDIR" "$APPTAINER_CACHEDIR"
+
+# Where to drop a small file other jobs can read to learn host/port
+CONN_FILE="$(pwd)/redis_connection.env"
+mkdir -p "$(dirname "$CONN_FILE")"
+
+# Choose an available port (override by exporting REDIS_PORT before sbatch)
+if [ -z "${REDIS_PORT:-}" ]; then
+  used_ports=$(ss -Htan | awk -F':' '{print $NF}' | sort -u)
+  REDIS_PORT=$(comm -23 <(seq 20000 65000) <(echo "$used_ports") | shuf -n 1)
+fi
+
+# Hostname/IP to advertise to other nodes
+REDIS_HOST=$(hostname -f)
+
+echo "Exporting connection info to: $CONN_FILE"
+cat > "$CONN_FILE" <<EOF
+export REDIS_HOST=$REDIS_HOST
+export REDIS_PORT=$REDIS_PORT
+EOF
+echo "REDIS_HOST=$REDIS_HOST"
+echo "REDIS_PORT=$REDIS_PORT"
+
+# Optional: set a password for basic protection (export REDIS_PASSWORD before sbatch)
+REDIS_PASSWORD=${REDIS_PASSWORD:-}
+if [ -n "${REDIS_PASSWORD}" ]; then
+  echo "export REDIS_PASSWORD=$REDIS_PASSWORD" >> "$CONN_FILE"
+fi
+
+# Prefer Apptainer/Singularity to run a clean Redis server image
+APPTAINER=$(command -v apptainer || true)
+SINGULARITY=$(command -v singularity || true)
+
+if [ -n "$APPTAINER" ] || [ -n "$SINGULARITY" ]; then
+  RUNTIME=${APPTAINER:-$SINGULARITY}
+  echo "Starting Redis via container runtime: $RUNTIME"
+  # Note: host networking is used by default; bind to all interfaces for intra-cluster access
+  exec "$RUNTIME" exec docker://redis:7-alpine \
+    redis-server --port "$REDIS_PORT" --bind 0.0.0.0 \
+      --protected-mode no \
+      ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD} \
+      --appendonly no --save "" \
+      --daemonize no
+else
+  # Fallback: native redis-server must be available on PATH (e.g., module load redis or conda-forge redis)
+  if ! command -v redis-server >/dev/null 2>&1; then
+    echo "ERROR: Neither apptainer/singularity nor redis-server found on PATH." >&2
+    echo "Install server via module or conda-forge (package: redis) or enable Apptainer." >&2
+    exit 127
+  fi
+  echo "Starting native redis-server"
+  exec redis-server --port "$REDIS_PORT" --bind 0.0.0.0 \
+    --protected-mode no \
+    ${REDIS_PASSWORD:+--requirepass $REDIS_PASSWORD} \
+    --appendonly no --save "" \
+    --daemonize no
+fi

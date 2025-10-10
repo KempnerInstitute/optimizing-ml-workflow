@@ -1,0 +1,27 @@
+name: sweep_ave
+channels:
+  - conda-forge
+  - defaults
+  - anaconda
+dependencies:
+  - python=3.12  # or whatever version you need
+  - pip
+  - pip:
+      - torch
+      - torchvision
+      - tqdm
+      - pillow
+      - triton
+      - psutil
+      - platformdirs
+      - wandb
+      - pynvml
+      - nvidia-ml-py
+      - tensorboard
+      - onnx
+      - onnxscript
+      - onnxruntime
+      - PyYAML
+      - nvidia-dali-cuda120 --extra-index-url https://pypi.nvidia.com
+      - redis
+

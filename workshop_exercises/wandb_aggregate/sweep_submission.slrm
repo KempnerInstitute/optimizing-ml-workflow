@@ -1,0 +1,44 @@
+#!/bin/bash
+#SBATCH --job-name=img
+#SBATCH --partition=kempner_h100
+#SBATCH --account=kempner_dev
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=01:00:00
+#SBATCH --output=img-%N.%x.%j.out
+#SBATCH --error=img-%N.%x.%j.err
+#SBATCH --array=1-12
+#SBATCH --export=ALL
+
+export CONDA_ENV="/n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave"
+
+# ------ REQUIRED: set these here ------
+export ENTITY=mxshad                 #your_entity       # TODO: Set your W&B entity
+export PROJECT=optimizing-ml-workflow-workshop_exercises_wandb_sweep      #your_project     # TODO: Set your W&B project  
+export SWEEP_ID=vorru2a6             #your_sweep_id   # TODO: Set from `wandb sweep` output
+
+# Optional runtime knobs for the live averaging (defaults baked into code)
+export EXPECTED_RUNS="${SLURM_ARRAY_TASK_COUNT:-$EXPECTED_RUNS}"
+export STEP_TIMEOUT=${STEP_TIMEOUT:-10}
+export QUORUM=${QUORUM:-0}
+# Note: LIVE_AVG_NS and LIVE_AVG_NS_VAL are set by live_avg.py defaults (loss and val)
+# Do not override them here - they're for aggregator configuration only
+
+module load cuda
+module load cudnn
+module load python
+conda activate $CONDA_ENV
+
+# If a redis_connection.env file exists, source it only if REDIS_HOST/PORT are not already set
+if [ -z "${REDIS_HOST:-}" ] || [ -z "${REDIS_PORT:-}" ]; then
+	if [ -f "$(pwd)/redis_connection.env" ]; then
+		echo "Sourcing $(pwd)/redis_connection.env"
+		# shellcheck disable=SC1091
+		source "$(pwd)/redis_connection.env"
+	fi
+fi
+
+wandb agent --count 1 "${ENTITY}/${PROJECT}/${SWEEP_ID}"
