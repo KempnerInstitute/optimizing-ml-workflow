@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=img
-#SBATCH --partition=kempner_h100
-#SBATCH --account=kempner_dev
+#SBATCH --partition=<partition-name>
+#SBATCH --account=<account-name>
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
@@ -16,9 +16,9 @@
 export CONDA_ENV="/n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave"
 
 # ------ REQUIRED: set these here ------
-export ENTITY=mxshad                 #your_entity       # TODO: Set your W&B entity
-export PROJECT=optimizing-ml-workflow-workshop_exercises_wandb_sweep      #your_project     # TODO: Set your W&B project  
-export SWEEP_ID=vorru2a6             #your_sweep_id   # TODO: Set from `wandb sweep` output
+export ENTITY=<your_entity>       # TODO: Set your W&B entity
+export PROJECT=<your_project>     # TODO: Set your W&B project  
+export SWEEP_ID=<your_sweep_id>   # TODO: Set from `wandb sweep` output
 
 # Optional runtime knobs for the live averaging (defaults baked into code)
 export EXPECTED_RUNS="${SLURM_ARRAY_TASK_COUNT:-$EXPECTED_RUNS}"

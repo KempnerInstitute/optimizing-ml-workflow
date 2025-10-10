@@ -13,7 +13,7 @@ Compute **cross-run averages** of training and validation losses in real time du
 - **`live_avg.py`** - Client library for publishing/subscribing to averages
 - **`aggregator.py`** - Computes and publishes cross-run averages
 - **`sweep_config.yaml`** - W&B sweep definition
-- **`config.yaml`** — Training hyperparameters
+- **`config.yaml`** - Training hyperparameters
 - **`redis_server.slrm`** - Launches Redis and creates `redis_connection.env`
 - **`sweep_aggregator.slrm`** - Runs aggregator (train or validation)
 - **`sweep_submission.slrm`** - Launches W&B agent workers
@@ -22,8 +22,6 @@ Compute **cross-run averages** of training and validation losses in real time du
 - Conda environment from `environment.yml` (includes `wandb`, `redis`, `torch`, etc.)
 - Slurm cluster with Apptainer/Singularity, or `redis-server` via pip
 - W&B account configured
-
-**Note:** Slurm scripts auto-activate the conda environment. Update `CONDA_ENV` path in scripts to match your environment.
 
 ## Workflow
 
@@ -78,7 +76,7 @@ sbatch redis_server.slrm
 
 Activate your conda environment and create the sweep:
 ```bash
-conda activate /path/to/your/conda_env  # e.g., /n/holylfs06/LABS/kempner_dev/Lab/mmsh/conda_envs/sweep_ave
+conda activate /path/to/your/conda_env
 wandb login  # If not already logged in
 wandb sweep sweep_config.yaml
 ```
